@@ -21,10 +21,18 @@ export const config: any = createConfig("waas", {
   projectAccessKey: projectAccessKey,
   chainIds,
   defaultChainId,
-  appName: "Kit Starter",
+  appName: "CcOp Synergy",
   waasConfigKey: waasConfigKey,
-  googleClientId: googleClientId,
-  appleClientId: appleClientId,
-  appleRedirectURI: appleRedirectURI,
-  walletConnectProjectId: walletConnectId,
+  // Only include optional providers if they are properly configured
+  ...(googleClientId && googleClientId !== 'YOUR_GOOGLE_CLIENT_ID' && { googleClientId }),
+  ...(appleClientId && appleClientId !== 'YOUR_APPLE_CLIENT_ID' && { 
+    appleClientId,
+    appleRedirectURI 
+  }),
+  ...(walletConnectId && walletConnectId !== 'YOUR_WALLET_CONNECT_PROJECT_ID' && { 
+    walletConnectProjectId: walletConnectId 
+  }),
+  email: true,
+  coinbase: true,
+  metaMask: true,
 });

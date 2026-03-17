@@ -12,11 +12,13 @@
     "postinstall": "(cp -n .env.example .env) || echo already exists"
   },
   "dependencies": {
-    "0xsequence": "2.3.38",
     "@0xsequence-demos/boilerplate-design-system": "^0.2.7",
     "@0xsequence/connect": "^5.4.8",
     "@0xsequence/network": "^2.3.38",
+    "@metamask/sdk": "^0.33.1",
     "@tanstack/react-query": "^5.90.12",
+    "@wagmi/connectors": "^7.1.5",
+    "0xsequence": "2.3.38",
     "ethers": "6.16.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
