@@ -1,783 +1,168 @@
 package com.ccop.usbcpowermonitor;
 
 import android.Manifest;
-import android.app.Activity;
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.graphics.Color;
-import android.graphics.Typeface;
+import android.app.*;
+import android.content.*;
+import android.graphics.*;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
-import android.os.Build;
-import android.os.Bundle;
+import android.os.*;
 import android.provider.Settings;
-import android.view.Gravity;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.ScrollView;
-import android.widget.Spinner;
-import android.widget.TextView;
-
+import android.view.*;
+import android.widget.*;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-
+import org.json.*;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.*;
+import java.util.regex.*;
 
 public class MainActivity extends Activity {
-    private static final int BG = Color.rgb(8,12,16), PANEL = Color.rgb(17,23,29), LINE = Color.rgb(43,56,68);
-    private static final int TEXT = Color.rgb(247,249,252), MUTED = Color.rgb(151,164,178), OK = Color.rgb(72,229,139);
-    private static final int WARN = Color.rgb(255,210,105), BLUE = Color.rgb(117,164,255), RED = Color.rgb(255,114,114);
-    private static final int REQ_PHOTO = 1001, REQ_EXPORT_REPORT = 2001, REQ_EXPORT_BUG = 2002;
+    private static final int BG=Color.rgb(6,11,15),HEADER=Color.rgb(4,21,30),PANEL=Color.rgb(14,25,34),LINE=Color.rgb(43,61,74),TEXT=Color.rgb(247,249,252),MUTED=Color.rgb(151,164,178),BLUE=Color.rgb(24,153,255),CYAN=Color.rgb(73,194,255),OK=Color.rgb(48,214,132),WARN=Color.rgb(255,196,71),RED=Color.rgb(255,91,91);
+    private static final int REQ_PHOTO=1001,REQ_EXPORT=2001;
+    enum Tab{OVERVIEW,LIVE,PROFILES,BRIDGE,HISTORY,REPORT}
+    private ProfileStore profileStore; private BridgeStore bridgeStore; private JSONObject telemetry=new JSONObject();
+    private LinearLayout content,nav; private TextView headerStatus; private Tab current=Tab.OVERVIEW; private final Map<String,TextView> refs=new HashMap<>();
+    private long historyRange=60L*60L*1000L; private String historyProfileId=""; private boolean lastPluggedUi=false; private boolean firstTelemetry=true;
+    private ProfileStore.Profile pendingPhotoProfile; private String pendingExport="";
+    private HistoryChartView powerChart,socChart; private DeviceSocChartView deviceChart;
 
-    private final java.util.Map<String, TextView> fields = new java.util.LinkedHashMap<>();
-    private ProfileStore profileStore;
-    private List<ProfileStore.Profile> profiles = new ArrayList<>();
-    private ProfileStore.Profile editingProfile;
+    private final BroadcastReceiver receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){if(TelemetryService.ACTION_TELEMETRY.equals(i.getAction()))updateTelemetry(i);}};
 
-    private TextView speedBig, speedSub, liveOrigin, sourceStatus, sourceSocText, aggregateText, phoneSocText;
-    private TextView profileStatus, ocrStatus, bugStatus, breakdownText, chartRangeLabel;
-    private ProgressBar aggregateBar, phoneBar, sourceBar;
-    private HistoryChartView powerChart, socChart;
-    private Spinner profileSpinner, typeSpinner;
-    private EditText nameEdit, capacityEdit, nominalVEdit, socEdit, efficiencyEdit, profileMaxVEdit, profileMaxAEdit, noteEdit, reportNoteEdit;
-    private CheckBox passthroughCheck;
+    @Override protected void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(HEADER);getWindow().setNavigationBarColor(BG);profileStore=new ProfileStore(this);bridgeStore=new BridgeStore(this);setContentView(buildShell());showTab(Tab.OVERVIEW);startMonitor();if(Build.VERSION.SDK_INT>=33)try{requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},900);}catch(Throwable ignored){}}
+    @Override protected void onResume(){super.onResume();IntentFilter f=new IntentFilter(TelemetryService.ACTION_TELEMETRY);if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(receiver,f);}
+    @Override protected void onPause(){try{unregisterReceiver(receiver);}catch(Throwable ignored){}super.onPause();}
 
-    private long chartRangeMs = 60L * 60L * 1000L;
-    private long lastChartRefresh = 0L;
-    private JSONObject lastTelemetry = new JSONObject();
-    private double lastSourceDirectSoc = Double.NaN;
-    private String pendingExportContent = "";
+    private View buildShell(){
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);
+        root.setOnApplyWindowInsetsListener((v,in)->{v.setPadding(0,in.getSystemWindowInsetTop(),0,in.getSystemWindowInsetBottom());return in;});
+        LinearLayout h=new LinearLayout(this);h.setOrientation(LinearLayout.VERTICAL);h.setPadding(dp(20),dp(12),dp(20),dp(12));h.setBackgroundColor(HEADER);
+        LinearLayout titleRow=new LinearLayout(this);titleRow.setGravity(Gravity.CENTER_VERTICAL);ImageView icon=new ImageView(this);icon.setImageResource(R.drawable.ic_ccop_lademonitor);titleRow.addView(icon,new LinearLayout.LayoutParams(dp(56),dp(56)));LinearLayout texts=new LinearLayout(this);texts.setOrientation(LinearLayout.VERTICAL);texts.setPadding(dp(12),0,0,0);texts.addView(txt("CCOP LadeMonitor",30,TEXT,true));texts.addView(txt("ENERGIE. IMMER. ÜBERALL.",12,MUTED,true));titleRow.addView(texts,new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1));h.addView(titleRow);
+        headerStatus=txt("● Live-Monitor startet …",14,OK,false);headerStatus.setPadding(dp(4),dp(8),0,0);h.addView(headerStatus);root.addView(h);
+        FrameLayout frame=new FrameLayout(this);content=new LinearLayout(this);frame.addView(content,new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));root.addView(frame,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,0,1));
+        nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);nav.setBackgroundColor(Color.rgb(5,16,23));nav.setPadding(dp(4),dp(3),dp(4),dp(3));addNav(Tab.OVERVIEW,"⌂\nÜbersicht");addNav(Tab.LIVE,"⌁\nLive");addNav(Tab.PROFILES,"▱\nProfile");addNav(Tab.BRIDGE,"⌘\nBridge");addNav(Tab.HISTORY,"◷\nVerlauf");addNav(Tab.REPORT,"▥\nBericht");root.addView(nav,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(70)));return root;
+    }
+    private void addNav(Tab t,String s){TextView v=txt(s,11,MUTED,true);v.setGravity(Gravity.CENTER);v.setOnClickListener(x->showTab(t));nav.addView(v,new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.MATCH_PARENT,1));v.setTag(t);}
+    private void updateNav(){for(int i=0;i<nav.getChildCount();i++){TextView v=(TextView)nav.getChildAt(i);v.setTextColor(v.getTag()==current?CYAN:MUTED);}}
+    private void showTab(Tab t){current=t;refs.clear();content.removeAllViews();ScrollView s=new ScrollView(this);s.setFillViewport(true);LinearLayout body=new LinearLayout(this);body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(20),dp(20),dp(20),dp(24));s.addView(body);content.addView(s,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));if(t==Tab.OVERVIEW)buildOverview(body);else if(t==Tab.LIVE)buildLive(body);else if(t==Tab.PROFILES)buildProfiles(body);else if(t==Tab.BRIDGE)buildBridge(body);else if(t==Tab.HISTORY)buildHistory(body);else buildReport(body);updateNav();updateVisible();}
 
-    private final BroadcastReceiver receiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) {
-            if (TelemetryService.ACTION_TELEMETRY.equals(intent.getAction())) updateFromTelemetry(intent);
-        }
-    };
+    private void sectionHeader(LinearLayout b,String title,String sub){b.addView(txt(title,31,TEXT,true));TextView s=txt(sub,15,MUTED,false);s.setPadding(0,dp(3),0,dp(16));b.addView(s);}
+    private LinearLayout card(){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.VERTICAL);c.setPadding(dp(16),dp(15),dp(16),dp(15));c.setBackground(round(PANEL,LINE,18));return c;}
+    private void addCard(LinearLayout b,View c){LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);p.setMargins(0,0,0,dp(12));b.addView(c,p);}
+    private TextView ref(String key,String initial,int size,int color,boolean bold){TextView v=txt(initial,size,color,bold);refs.put(key,v);return v;}
+    private TextView metricRow(String label,String key){LinearLayout r=new LinearLayout(this);r.setGravity(Gravity.CENTER_VERTICAL);TextView l=txt(label,14,MUTED,false),v=ref(key,"—",15,TEXT,true);r.addView(l,new LinearLayout.LayoutParams(0,dp(40),1));r.addView(v,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,dp(40)));refs.put("ROW_"+key,v);return v;}
+    private void addMetric(LinearLayout c,String label,String key){LinearLayout r=new LinearLayout(this);r.setGravity(Gravity.CENTER_VERTICAL);r.addView(txt(label,14,MUTED,false),new LinearLayout.LayoutParams(0,dp(40),1));TextView v=ref(key,"—",15,TEXT,true);v.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);r.addView(v);c.addView(r);}
 
-    @Override protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(BG);
-        getWindow().setNavigationBarColor(BG);
-        profileStore = new ProfileStore(this);
-        setContentView(buildUi());
-        reloadProfiles(profileStore.getActiveId());
-        startMonitor();
-        if (Build.VERSION.SDK_INT >= 33) {
-            try { requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 901); } catch (Throwable ignored) { }
-        }
-        refreshCharts();
-        updateBreakdown(Double.NaN);
+    private void buildOverview(LinearLayout b){
+        sectionHeader(b,"Gesamtenergie & Gerätepool","Nur gemessene oder bestätigte Daten. Keine Demo-Werte.");
+        if(isPlugged()&&profileStore.getActive()==null){Button assign=primary("QUELLE / POWERBANK ZUORDNEN");assign.setOnClickListener(v->promptSourceSelection());addCard(b,assign);}
+        LinearLayout total=card();total.addView(txt("Gesamtenergie",19,TEXT,true));TextView pct=ref("aggPct","— %",46,BLUE,true);total.addView(pct);ProgressBar pb=progress();refs.put("aggBarHolder",pct);total.addView(pb,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(8)));pb.setTag("aggBar");TextView wh=ref("aggWh","— Wh verfügbar",13,MUTED,false);wh.setPadding(0,dp(8),0,0);total.addView(wh);addCard(b,total);
+        LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);LinearLayout speed=smallCard("Ladegeschwindigkeit");speed.addView(ref("ovPower","— W",24,TEXT,true));speed.addView(ref("ovCurrent","— mA",12,MUTED,false));LinearLayout source=smallCard("Aktive Quelle");source.addView(ref("ovSource","Keine Quelle",18,TEXT,true));source.addView(ref("ovSourceState","nicht verbunden",12,MUTED,false));row.addView(speed,new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1));LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1);rp.setMargins(dp(10),0,0,0);row.addView(source,rp);addCard(b,row);
+        LinearLayout runtime=card();runtime.addView(txt("Laufzeit-Prognose",17,TEXT,true));runtime.addView(ref("runtime","—",28,CYAN,true));runtime.addView(txt("Berechnet aus bekannter Gesamt-Restenergie und aktuellem Geräteverbrauch. Bei aktiver Ladung wird keine künstliche Laufzeit ausgegeben.",12,MUTED,false));addCard(b,runtime);
+        LinearLayout bridge=card();bridge.addView(txt("Aktive Bridge",17,TEXT,true));bridge.addView(ref("ovBridge","Keine Bridge aktiv",17,CYAN,true));bridge.addView(ref("ovBridgeInfo","Bridge kann im Tab Bridge erstellt und aktiviert werden.",12,MUTED,false));bridge.setOnClickListener(v->showTab(Tab.BRIDGE));addCard(b,bridge);
+        LinearLayout devices=card();devices.addView(txt("Geräte im System",18,TEXT,true));devices.addView(deviceRowPhone());for(ProfileStore.Profile p:profileStore.loadActiveInventory())devices.addView(deviceRow(p));addCard(b,devices);
+        Button go=primary("▶  LIVE ÜBERWACHEN  ›");go.setOnClickListener(v->showTab(Tab.LIVE));addCard(b,go);
+    }
+    private LinearLayout smallCard(String label){LinearLayout c=card();c.addView(txt(label,13,MUTED,false));return c;}
+    private View deviceRowPhone(){LinearLayout r=deviceBase();LinearLayout left=new LinearLayout(this);left.setOrientation(LinearLayout.VERTICAL);left.addView(txt("Smartphone",16,TEXT,true));left.addView(txt("Android · live",12,MUTED,false));r.addView(left,new LinearLayout.LayoutParams(0,dp(58),1));TextView s=ref("phoneDeviceSoc","— %",17,CYAN,true);r.addView(s);return r;}
+    private View deviceRow(ProfileStore.Profile p){LinearLayout r=deviceBase();LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);l.addView(txt(p.name,16,TEXT,true));String meta=p.type+" · "+(p.deviceHash==null?"":p.deviceHash);l.addView(txt(meta,11,MUTED,false));r.addView(l,new LinearLayout.LayoutParams(0,dp(62),1));String soc=p.isEnergyStore()?(p.socKnown?fmt0(p.estimatedSoc)+" %":"SOC ?"):("CABLE".equals(p.type)?"Kabel":"Quelle");TextView v=txt(soc,16,p.socKnown?CYAN:MUTED,true);r.addView(v);r.setOnClickListener(x->showProfileDialog(p));return r;}
+    private LinearLayout deviceBase(){LinearLayout r=new LinearLayout(this);r.setGravity(Gravity.CENTER_VERTICAL);r.setPadding(dp(4),dp(7),dp(4),dp(7));return r;}
+
+    private void buildLive(LinearLayout b){
+        sectionHeader(b,"Live-Messung","Android BatteryManager + verfügbare USB/VBUS/OEM-Knoten. Fehlende Werte bleiben fehlend.");
+        LinearLayout hero=card();hero.addView(txt("Ladegeschwindigkeit LIVE",18,TEXT,true));hero.addView(ref("liveMa","— mA",48,BLUE,true));hero.addView(ref("liveAW","— A  ·  — W netto",21,TEXT,true));hero.addView(ref("liveState","Kein Ladegerät erkannt",13,MUTED,false));addCard(b,hero);
+        LinearLayout battery=card();battery.addView(txt("Smartphone-Akku · direkt",17,TEXT,true));addMetric(battery,"Akkustand","livePhonePct");addMetric(battery,"Akkuspannung","liveBattV");addMetric(battery,"Netto-Strom","liveBattA");addMetric(battery,"Netto-Leistung","liveBattW");addMetric(battery,"Temperatur","liveTemp");addCard(b,battery);
+        LinearLayout source=card();source.addView(txt("Angeschlossene Quelle",17,TEXT,true));addMetric(source,"Profil / Modell","liveSourceName");addMetric(source,"Quellenspannung LIVE","liveSourceV");addMetric(source,"Quellenstrom LIVE","liveSourceA");addMetric(source,"Quellenleistung","liveSourceW");addMetric(source,"Powerbank-SOC","liveSourceSoc");addMetric(source,"Android MAX-Profil","liveMax");Button choose=secondary("QUELLE BESTÄTIGEN / WECHSELN");choose.setOnClickListener(v->promptSourceSelection());source.addView(choose);addCard(b,source);
+        LinearLayout charts=card();charts.addView(txt("Live-Verlauf · 1 Stunde",17,TEXT,true));powerChart=new HistoryChartView(this,HistoryChartView.Mode.POWER);socChart=new HistoryChartView(this,HistoryChartView.Mode.SOC);charts.addView(powerChart,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(210)));charts.addView(socChart,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(210)));addCard(b,charts);refreshCharts();
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        IntentFilter f = new IntentFilter(TelemetryService.ACTION_TELEMETRY);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, Context.RECEIVER_NOT_EXPORTED);
-        else registerReceiver(receiver, f);
+    private void buildProfiles(LinearLayout b){
+        sectionHeader(b,"Profile & Inventar","Powerbanks, Netzteile, Kabel und externe Akkus. Editieren, validieren, fotografieren und archivieren.");
+        Button source=secondary("LADEQUELLE AUSWÄHLEN");source.setOnClickListener(v->promptSourceSelection());addCard(b,source);
+        List<ProfileStore.Profile> list=profileStore.load();int active=0,arch=0;for(ProfileStore.Profile p:list)if(p.archived)arch++;else active++;TextView meta=txt(active+" aktive Profile · "+arch+" archiviert",12,MUTED,false);meta.setPadding(0,0,0,dp(10));b.addView(meta);
+        for(ProfileStore.Profile p:list){LinearLayout c=card();c.setAlpha(p.archived?.55f:1f);LinearLayout top=new LinearLayout(this);top.setGravity(Gravity.CENTER_VERTICAL);LinearLayout names=new LinearLayout(this);names.setOrientation(LinearLayout.VERTICAL);names.addView(txt(p.name,19,TEXT,true));names.addView(txt(p.type+" · Hash "+p.deviceHash+(p.archived?" · ARCHIV":""),11,MUTED,false));top.addView(names,new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1));if(p.id.equals(profileStore.getActiveId()))top.addView(txt("AKTIV",11,OK,true));c.addView(top);if(p.isEnergyStore()){c.addView(txt((p.capacityWh()>0?fmt1(p.capacityWh())+" Wh":"Kapazität offen")+" · "+(p.socKnown?"SOC "+fmt0(p.estimatedSoc)+"% · "+p.socOrigin:"SOC nicht bestätigt"),13,p.socKnown?CYAN:WARN,false));}else if("CABLE".equals(p.type)){c.addView(txt("Max. "+(p.cableMaxW>0?fmt0(p.cableMaxW)+" W":"offen")+" · E-Marker "+(p.cableEMarked?"Ja":"Nein")+" · Qualität "+(Double.isNaN(p.cableQuality)?"nicht gemessen":fmt0(p.cableQuality)+"/100"),13,CYAN,false));}c.addView(txt(p.photoUris.size()+" Foto(s) · zuletzt gesehen "+dateShort(p.lastSeenAt),11,MUTED,false));LinearLayout buttons=new LinearLayout(this);Button open=mini("ÖFFNEN");open.setOnClickListener(v->showProfileDialog(p));Button act=mini("ALS QUELLE");act.setOnClickListener(v->{p.archived=false;p.lastSeenAt=System.currentTimeMillis();profileStore.saveProfile(p);profileStore.setActiveId(p.id);showTab(Tab.PROFILES);});Button archive=mini(p.archived?"REAKTIVIEREN":"ARCHIV");archive.setOnClickListener(v->{profileStore.archiveProfile(p.id,!p.archived);showTab(Tab.PROFILES);});buttons.addView(open,new LinearLayout.LayoutParams(0,dp(44),1));buttons.addView(act,new LinearLayout.LayoutParams(0,dp(44),1));buttons.addView(archive,new LinearLayout.LayoutParams(0,dp(44),1));c.addView(buttons);addCard(b,c);}
+        Button add=primary("＋  NEUES PROFIL ANLEGEN  ›");add.setOnClickListener(v->showProfileDialog(null));addCard(b,add);
     }
 
-    @Override protected void onPause() {
-        try { unregisterReceiver(receiver); } catch (Throwable ignored) { }
-        super.onPause();
+    private void showProfileDialog(ProfileStore.Profile existing){
+        ProfileStore.Profile p=existing==null?new ProfileStore.Profile():existing;pendingPhotoProfile=p;
+        ScrollView sv=new ScrollView(this);LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(20),dp(8),dp(20),dp(8));sv.addView(box);
+        EditText name=input(p.name,"Gerätename / Modell");box.addView(name);Spinner type=new Spinner(this);String[] types={"POWERBANK","EXTERNAL_BATTERY","CHARGER","CABLE"};ArrayAdapter<String> ta=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,types);type.setAdapter(ta);type.setSelection(Math.max(0,Arrays.asList(types).indexOf(p.type)));box.addView(type);
+        EditText mah=input(p.capacityMah>0?fmtNoGroup(p.capacityMah):"","Kapazität mAh");EditText nv=input(p.nominalV>0?fmtNoGroup(p.nominalV):"","Nennspannung V");EditText soc=input(p.socKnown?fmtNoGroup(p.estimatedSoc):"","SOC % (leer = unbekannt)");EditText eff=input(fmtNoGroup(p.efficiency*100),"Wirkungsgrad %");EditText maxv=input(p.profileMaxVoltage>0?fmtNoGroup(p.profileMaxVoltage):"","Max. V");EditText maxa=input(p.profileMaxCurrent>0?fmtNoGroup(p.profileMaxCurrent):"","Max. A");box.addView(mah);box.addView(nv);box.addView(soc);box.addView(eff);box.addView(maxv);box.addView(maxa);
+        EditText cableW=input(p.cableMaxW>0?fmtNoGroup(p.cableMaxW):"","Kabel max. W");EditText cableL=input(p.cableLengthM>0?fmtNoGroup(p.cableLengthM):"","Kabellänge m");box.addView(cableW);box.addView(cableL);CheckBox em=new CheckBox(this);em.setText("E-Marker vorhanden");em.setTextColor(TEXT);em.setChecked(p.cableEMarked);box.addView(em);CheckBox pass=new CheckBox(this);pass.setText("Pass-through unterstützt");pass.setTextColor(TEXT);pass.setChecked(p.passthrough);box.addView(pass);
+        EditText note=input(p.note,"Notiz");note.setMinLines(2);box.addView(note);box.addView(txt("Hash: "+p.deviceHash+" · Fotos: "+p.photoUris.size(),12,MUTED,false));
+        if(!p.photoUris.isEmpty()){HorizontalScrollView hs=new HorizontalScrollView(this);LinearLayout imgs=new LinearLayout(this);for(String u:p.photoUris){try{ImageView im=new ImageView(this);im.setScaleType(ImageView.ScaleType.CENTER_CROP);im.setImageURI(Uri.parse(u));imgs.addView(im,new LinearLayout.LayoutParams(dp(120),dp(90)));}catch(Exception ignored){}}hs.addView(imgs);box.addView(hs,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(100)));}
+        Button photo=secondary("FOTO HINZUFÜGEN + OCR");photo.setOnClickListener(v->{p.name=name.getText().toString().trim();p.type=types[type.getSelectedItemPosition()];p.capacityMah=dbl(mah.getText().toString(),0);p.nominalV=dbl(nv.getText().toString(),0);pendingPhotoProfile=p;choosePhoto();});box.addView(photo);
+        if("CABLE".equals(p.type)||"CABLE".equals(types[type.getSelectedItemPosition()])){Button test=secondary("KABELQUALITÄT AUS LIVE-MESSUNGEN PRÜFEN");test.setOnClickListener(v->testCable(p));box.addView(test);}
+        AlertDialog d=new AlertDialog.Builder(this).setTitle(existing==null?"Neues Profil":"Profil-Detail").setView(sv).setNegativeButton("ABBRECHEN",null).setNeutralButton(existing!=null?(p.archived?"REAKTIVIEREN":"ARCHIVIEREN"):"",null).setPositiveButton("SPEICHERN",null).create();
+        d.setOnShowListener(x->{d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{p.name=nonEmpty(name.getText().toString(),"Unbenanntes Gerät");p.type=types[type.getSelectedItemPosition()];p.capacityMah=dbl(mah.getText().toString(),0);p.nominalV=dbl(nv.getText().toString(),0);String ss=soc.getText().toString().trim();if(ss.isEmpty()){p.socKnown=false;p.estimatedSoc=Double.NaN;p.socOrigin="UNBEKANNT";}else{p.estimatedSoc=clamp(dbl(ss,0),0,100);p.socKnown=true;p.socOrigin="MANUAL";p.lastValidatedSoc=p.estimatedSoc;p.lastValidationAt=System.currentTimeMillis();}p.efficiency=clamp(dbl(eff.getText().toString(),88)/100.0,.5,1);p.profileMaxVoltage=dbl(maxv.getText().toString(),0);p.profileMaxCurrent=dbl(maxa.getText().toString(),0);p.cableMaxW=dbl(cableW.getText().toString(),0);p.cableLengthM=dbl(cableL.getText().toString(),0);p.cableEMarked=em.isChecked();p.passthrough=pass.isChecked();p.note=note.getText().toString();profileStore.saveProfile(p);d.dismiss();showTab(Tab.PROFILES);});if(existing!=null){d.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->{profileStore.archiveProfile(p.id,!p.archived);d.dismiss();showTab(Tab.PROFILES);});}});d.show();
     }
 
-    private void startMonitor() {
-        Intent i = new Intent(this, TelemetryService.class);
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
+    private void buildBridge(LinearLayout b){
+        sectionHeader(b,"Bridge konfigurieren","Logischer Energiepool und Zuordnung. Die App verbindet Akkus nicht elektrisch.");
+        LinearLayout safety=card();safety.addView(txt("ⓘ Direkte Bridge nur mit dafür zertifizierter Hardware",14,WARN,true));safety.addView(txt("Powerbanks/Akkus niemals allein aufgrund dieser App parallel oder direkt zusammenschalten. Die Bridge-Funktion dokumentiert und berechnet Kombinationen; elektrische Sicherheit muss die Hardware gewährleisten.",12,MUTED,false));addCard(b,safety);
+        BridgeStore.Bridge active=bridgeStore.active();LinearLayout state=card();state.addView(txt("Aktive Bridge",17,TEXT,true));state.addView(ref("bridgeActive",active==null?"Keine Bridge aktiv":active.name,21,CYAN,true));if(active!=null)state.addView(txt(bridgeDescription(active),13,MUTED,false));addCard(b,state);
+        List<BridgeStore.Bridge> all=bridgeStore.load();for(BridgeStore.Bridge br:all)if(!br.archived){LinearLayout c=card();c.addView(txt(br.name+(br.active?" · AKTIV":""),18,TEXT,true));c.addView(txt(bridgeDescription(br),13,MUTED,false));LinearLayout rr=new LinearLayout(this);Button edit=mini("BEARBEITEN");edit.setOnClickListener(v->showBridgeDialog(br));Button act=mini("AKTIVIEREN");act.setOnClickListener(v->{bridgeStore.activate(br.id);showTab(Tab.BRIDGE);});Button ar=mini("ARCHIV");ar.setOnClickListener(v->{bridgeStore.archive(br.id);showTab(Tab.BRIDGE);});rr.addView(edit,new LinearLayout.LayoutParams(0,dp(44),1));rr.addView(act,new LinearLayout.LayoutParams(0,dp(44),1));rr.addView(ar,new LinearLayout.LayoutParams(0,dp(44),1));c.addView(rr);addCard(b,c);}
+        Button add=primary("＋  NEUE BRIDGE ERSTELLEN  ›");add.setOnClickListener(v->showBridgeDialog(null));addCard(b,add);Button suggest=secondary("PASSENDE KOMBINATION VORSCHLAGEN");suggest.setOnClickListener(v->suggestBridge());addCard(b,suggest);
     }
+    private String bridgeDescription(BridgeStore.Bridge br){return "Akku A: "+profileName(br.batteryAId)+" · Akku B: "+profileName(br.batteryBId)+"\nKabel: "+profileName(br.cableId)+" · Quelle: "+profileName(br.sourceId)+" · Modus: "+br.mode;}
+    private void showBridgeDialog(BridgeStore.Bridge existing){List<ProfileStore.Profile> bats=new ArrayList<>(),cables=new ArrayList<>(),sources=new ArrayList<>();for(ProfileStore.Profile p:profileStore.loadActiveInventory()){if(p.isEnergyStore())bats.add(p);if("CABLE".equals(p.type))cables.add(p);if(!"CABLE".equals(p.type))sources.add(p);}if(bats.size()<2){toast("Für eine Bridge werden mindestens zwei Akku-/Powerbank-Profile benötigt.");return;}BridgeStore.Bridge br=existing==null?new BridgeStore.Bridge():existing;LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(20),0,dp(20),0);EditText name=input(br.name,"Bridge-Name");box.addView(name);Spinner a=profileSpinner(bats,br.batteryAId),bb=profileSpinner(bats,br.batteryBId),c=profileSpinner(cables,br.cableId),src=profileSpinner(sources,br.sourceId);box.addView(label("Akku A"));box.addView(a);box.addView(label("Akku B"));box.addView(bb);box.addView(label("Kabel"));box.addView(c);box.addView(label("Quelle / Eingang"));box.addView(src);String[] modes={"POOL","SEQUENZ","PASS_THROUGH","DIRECT_HARDWARE"};Spinner mode=new Spinner(this);mode.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,modes));mode.setSelection(Math.max(0,Arrays.asList(modes).indexOf(br.mode)));box.addView(label("Modus"));box.addView(mode);new AlertDialog.Builder(this).setTitle("Bridge konfigurieren").setView(box).setNegativeButton("ABBRECHEN",null).setPositiveButton("SPEICHERN",(d,w)->{br.name=nonEmpty(name.getText().toString(),"Bridge");br.batteryAId=idAt(bats,a);br.batteryBId=idAt(bats,bb);if(br.batteryAId.equals(br.batteryBId)){toast("Akku A und B müssen verschieden sein.");return;}br.cableId=idAt(cables,c);br.sourceId=idAt(sources,src);br.mode=modes[mode.getSelectedItemPosition()];br.updatedAt=System.currentTimeMillis();bridgeStore.save(br);showTab(Tab.BRIDGE);}).show();}
+    private void suggestBridge(){List<ProfileStore.Profile>bats=new ArrayList<>(),cables=new ArrayList<>();for(ProfileStore.Profile p:profileStore.loadActiveInventory()){if(p.isEnergyStore())bats.add(p);if("CABLE".equals(p.type))cables.add(p);}if(bats.size()<2){toast("Noch keine passende Kombination: mindestens zwei Akkus erforderlich.");return;}String msg="Vorschlag: "+bats.get(0).name+" + "+bats.get(1).name+(cables.isEmpty()?" · Kabelprofil fehlt":" · "+cables.get(0).name)+"\n\nSOC A: "+socLabel(bats.get(0))+" · SOC B: "+socLabel(bats.get(1));new AlertDialog.Builder(this).setTitle("Bridge-Vorschlag").setMessage(msg).setNegativeButton("SPÄTER",null).setPositiveButton("KONFIGURIEREN",(d,w)->showBridgeDialog(null)).show();}
 
-    private void stopMonitor() {
-        Intent i = new Intent(this, TelemetryService.class).setAction(TelemetryService.ACTION_STOP);
-        startService(i);
+    private void buildHistory(LinearLayout b){
+        sectionHeader(b,"Ladeverlauf & Ladezyklen","Laden UND Entladen über Zeit. Zeitraum frei wählbar; Unterbrechungen bleiben sichtbar.");
+        LinearLayout ranges=new LinearLayout(this);String[] labels={"15m","1h","6h","24h","Alle","Frei"};long[] vals={900000,3600000,21600000,86400000,0,-1};for(int i=0;i<labels.length;i++){Button bt=mini(labels[i]);final long v=vals[i];bt.setOnClickListener(x->{if(v<0)customRange();else{historyRange=v;showTab(Tab.HISTORY);}});ranges.addView(bt,new LinearLayout.LayoutParams(0,dp(46),1));}addCard(b,ranges);
+        LinearLayout p=card();p.addView(txt("Lade-/Entladeleistung (W)",18,TEXT,true));powerChart=new HistoryChartView(this,HistoryChartView.Mode.POWER);p.addView(powerChart,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(245)));addCard(b,p);
+        LinearLayout s=card();s.addView(txt("Smartphone / Quelle / Gesamt-SOC",18,TEXT,true));socChart=new HistoryChartView(this,HistoryChartView.Mode.SOC);s.addView(socChart,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(245)));addCard(b,s);
+        List<ProfileStore.Profile> energy=new ArrayList<>();for(ProfileStore.Profile x:profileStore.loadActiveInventory())if(x.isEnergyStore())energy.add(x);if(!energy.isEmpty()){LinearLayout d=card();d.addView(txt("Geräteverlauf · einzelner Akku",18,TEXT,true));Spinner sp=profileSpinner(energy,historyProfileId);if(historyProfileId.isEmpty())historyProfileId=energy.get(0).id;sp.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onItemSelected(android.widget.AdapterView<?>p,View v,int pos,long id){historyProfileId=energy.get(pos).id;refreshDeviceChart();}public void onNothingSelected(android.widget.AdapterView<?>p){}});d.addView(sp);deviceChart=new DeviceSocChartView(this);d.addView(deviceChart,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(220)));addCard(b,d);}
+        LinearLayout stats=card();stats.addView(txt("Aktueller Zyklus",17,TEXT,true));addMetric(stats,"Energie netto","histCycleWh");addMetric(stats,"Messpunkte","histCount");addMetric(stats,"Zeitraum","histRange");addCard(b,stats);refreshCharts();
     }
+    private void customRange(){EditText e=input("180","Minuten (z. B. 180)");new AlertDialog.Builder(this).setTitle("Freier Zeitraum").setView(e).setNegativeButton("ABBRECHEN",null).setPositiveButton("ÜBERNEHMEN",(d,w)->{double m=dbl(e.getText().toString(),60);historyRange=(long)(Math.max(1,m)*60000L);showTab(Tab.HISTORY);}).show();}
 
-    private View buildUi() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(BG);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(14), dp(28), dp(14), dp(32));
-        scroll.addView(root, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    private void buildReport(LinearLayout b){sectionHeader(b,"Bericht & Entwicklungsauftrag","Messdaten, Inventar, Bridge und fehlende Telemetrie lokal exportieren.");LinearLayout diag=card();diag.addView(txt("Live-Diagnose",18,TEXT,true));addMetric(diag,"Ladegerät verbunden","repPlugged");addMetric(diag,"Laden aktiv","repCharging");addMetric(diag,"SOURCE_V","repV");addMetric(diag,"SOURCE_A","repA");addMetric(diag,"Aktives Profil","repProfile");addMetric(diag,"Inventar","repInventory");addMetric(diag,"Bridges","repBridges");addMetric(diag,"Historie","repHistory");addCard(b,diag);LinearLayout issues=card();issues.addView(txt("Automatisch erkannte Entwicklungsaufträge",18,TEXT,true));issues.addView(ref("repIssues","Prüfung läuft …",13,WARN,false));addCard(b,issues);Button export=primary("BERICHT ALS JSON EXPORTIEREN");export.setOnClickListener(v->exportReport());addCard(b,export);Button clear=secondary("VERLAUF ZURÜCKSETZEN");clear.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Verlauf löschen?").setMessage("Nur die lokale Messhistorie wird gelöscht. Profile und Bridges bleiben erhalten.").setNegativeButton("ABBRECHEN",null).setPositiveButton("LÖSCHEN",(d,w)->{HistoryStore.clear(this);showTab(Tab.REPORT);}).show());addCard(b,clear);}
 
-        root.addView(text("CCOP LadeMonitor · ENERGY HISTORY v6", 23, TEXT, true));
-        TextView intro = text("Live-Ladeleistung · persistente Historie · Geräteprofile · Powerbank-SOC · Foto/OCR · Reports", 12, MUTED, false);
-        intro.setPadding(0, dp(4), 0, dp(12));
-        root.addView(intro);
+    private void updateTelemetry(Intent i){try{JSONObject o=new JSONObject();for(String k:new String[]{"ts","charging","plugged","plugType","phonePct","batteryV","batteryA","batteryMa","batteryW","batteryAvgMa","chargeCounterMah","temperatureC","profileMaxV","profileMaxA","sourceV","sourceA","sourceExactW","sourceEffectiveW","sourcePowerEstimated","sourceDirectSoc","sourceType","profileId","profileName","profileType","profilePassthrough","profileCapacityWh","sourceSoc","aggregateSoc","aggregateRemainingWh","aggregateFullWh","aggregateKnownCount","aggregateUnknownCount","cycleNetWh","cycleSourceWh","totalNetWh","totalSourceWh","cycleId","historyCount"})if(i.hasExtra(k)){Object v=i.getExtras().get(k);o.put(k,v);}telemetry=o;}catch(Exception ignored){}boolean plugged=isPlugged();boolean was=lastPluggedUi;if(firstTelemetry){lastPluggedUi=plugged;firstTelemetry=false;}else{lastPluggedUi=plugged;if(plugged&&!was)new Handler(Looper.getMainLooper()).postDelayed(this::promptSourceSelection,300);}updateHeader();updateVisible();}
+    private void updateHeader(){boolean plugged=isPlugged(),charging=bool("charging");ProfileStore.Profile a=profileStore.getActive();String s=!plugged?"● Kein Ladegerät · Smartphone "+fmt0(val("phonePct"))+" %":(charging?"● Laden aktiv":"● Quelle verbunden")+"  ⚡ "+(a!=null?a.name:str("plugType","Quelle"))+"  ◉ "+fmt0(val("phonePct"))+" %";headerStatus.setText(s);headerStatus.setTextColor(plugged?OK:MUTED);}
+    private void updateVisible(){if(current==Tab.OVERVIEW)updateOverview();else if(current==Tab.LIVE)updateLive();else if(current==Tab.HISTORY){updateHistoryStats();refreshCharts();}else if(current==Tab.BRIDGE)updateBridgeLive();else if(current==Tab.REPORT)updateReport();}
+    private void updateOverview(){double agg=val("aggregateSoc"),rem=val("aggregateRemainingWh"),full=val("aggregateFullWh");set("aggPct",finite(agg)?fmt0(agg)+" %":"— %");set("aggWh",(finite(rem)?fmt1(rem)+" Wh verfügbar":"—")+" · "+(finite(full)?fmt1(full)+" Wh bekannt":"keine bestätigten externen Akkus")+(telemetry.optInt("aggregateUnknownCount",0)>0?" · "+telemetry.optInt("aggregateUnknownCount",0)+" SOC unbekannt":""));TextView barHolder=refs.get("aggBarHolder");if(barHolder!=null&&barHolder.getParent() instanceof LinearLayout){LinearLayout parent=(LinearLayout)barHolder.getParent();for(int i=0;i<parent.getChildCount();i++)if(parent.getChildAt(i) instanceof ProgressBar)((ProgressBar)parent.getChildAt(i)).setProgress(finite(agg)?(int)Math.round(agg):0);}double w=val("batteryW"),ma=val("batteryMa");set("ovPower",bool("charging")&&finite(w)?fmt1(Math.abs(w))+" W":"0 W");set("ovCurrent",finite(ma)?fmt0(Math.abs(ma))+" mA":"— mA");ProfileStore.Profile a=profileStore.getActive();set("ovSource",isPlugged()?(a!=null?a.name:"Quelle nicht zugeordnet"):"Keine Quelle");set("ovSourceState",isPlugged()?(bool("charging")?"Laden aktiv":"verbunden, nicht ladend"):"nicht verbunden");BridgeStore.Bridge br=bridgeStore.active();set("ovBridge",br==null?"Keine Bridge aktiv":br.name+" · "+br.mode);set("ovBridgeInfo",br==null?"Im Bridge-Tab konfigurieren.":bridgeDescription(br));set("phoneDeviceSoc",finite(val("phonePct"))?fmt0(val("phonePct"))+" %":"—");if(!isPlugged()&&finite(w)&&w>.05&&finite(rem))set("runtime",formatHours(rem/Math.abs(w))+" geschätzt");else set("runtime",isPlugged()?"Während aktiver Quelle nicht berechnet":"Noch keine belastbare Verbrauchsleistung");}
+    private void updateLive(){double ma=val("batteryMa"),a=val("batteryA"),w=val("batteryW");set("liveMa",finite(ma)?fmt0(Math.abs(ma))+" mA":"— mA");set("liveAW",(finite(a)?fmt2(Math.abs(a))+" A":"— A")+"  ·  "+(finite(w)?fmt2(Math.abs(w))+" W netto":"— W"));set("liveState",!isPlugged()?"Kein Ladegerät angeschlossen":(bool("charging")?"Laden aktiv · echte Android-Livewerte":"Quelle verbunden · kein aktiver Ladevorgang"));set("livePhonePct",finite(val("phonePct"))?fmt0(val("phonePct"))+" %":"—");set("liveBattV",finite(val("batteryV"))?fmt3(val("batteryV"))+" V":"—");set("liveBattA",finite(a)?fmt3(a)+" A":"—");set("liveBattW",finite(w)?fmt2(Math.abs(w))+" W":"—");set("liveTemp",finite(val("temperatureC"))?fmt1(val("temperatureC"))+" °C":"—");ProfileStore.Profile p=profileStore.getActive();set("liveSourceName",isPlugged()?(p!=null?p.name:"nicht zugeordnet"):"keine");set("liveSourceV",finite(val("sourceV"))?fmt3(val("sourceV"))+" V · LIVE":"nicht vom System freigegeben");set("liveSourceA",finite(val("sourceA"))?fmt3(val("sourceA"))+" A · LIVE":"nicht vom System freigegeben");set("liveSourceW",finite(val("sourceExactW"))?fmt2(val("sourceExactW"))+" W · DIREKT":(finite(val("sourceEffectiveW"))?fmt2(val("sourceEffectiveW"))+" W · aus Akku netto modelliert":"—"));set("liveSourceSoc",p!=null&&p.isEnergyStore()&&p.socKnown?fmt0(p.estimatedSoc)+" % · "+p.socOrigin:"nicht gemeldet / nicht bestätigt");set("liveMax",(finite(val("profileMaxV"))?fmt1(val("profileMaxV"))+" V":"—")+" / "+(finite(val("profileMaxA"))?fmt1(val("profileMaxA"))+" A":"—")+" · MAX, nicht Live");refreshCharts();}
+    private void updateBridgeLive(){BridgeStore.Bridge br=bridgeStore.active();set("bridgeActive",br==null?"Keine Bridge aktiv":br.name);}
+    private void updateHistoryStats(){set("histCycleWh",finite(val("cycleNetWh"))?fmt3(val("cycleNetWh"))+" Wh":"0 Wh");set("histCount",String.valueOf(HistoryStore.count(this)));set("histRange",historyRange==0?"Gesamt":formatRange(historyRange));}
+    private void updateReport(){set("repPlugged",isPlugged()?"JA":"NEIN");set("repCharging",bool("charging")?"JA":"NEIN");set("repV",finite(val("sourceV"))?fmt3(val("sourceV"))+" V":"UNAVAILABLE");set("repA",finite(val("sourceA"))?fmt3(val("sourceA"))+" A":"UNAVAILABLE");ProfileStore.Profile p=profileStore.getActive();set("repProfile",p==null?"keins":p.name);set("repInventory",profileStore.load().size()+" Profile");set("repBridges",bridgeStore.load().size()+" Bridges");set("repHistory",HistoryStore.count(this)+" Messpunkte");StringBuilder x=new StringBuilder();if(!finite(val("sourceV")))x.append("P0 · SOURCE_V wird vom Gerät nicht bereitgestellt.\n");if(!finite(val("sourceA")))x.append("P0 · SOURCE_A wird vom Gerät nicht bereitgestellt.\n");if(isPlugged()&&p==null)x.append("P0 · Quelle verbunden, aber keinem Profil zugeordnet.\n");for(ProfileStore.Profile q:profileStore.loadActiveInventory())if(q.isEnergyStore()&&!q.socKnown)x.append("P1 · SOC fehlt: ").append(q.name).append(". Manuell bestätigen oder direkte Telemetrie nutzen.\n");if(x.length()==0)x.append("Keine offenen Telemetrie-Probleme erkannt.");set("repIssues",x.toString());}
+    private void refreshCharts(){long since=historyRange==0?0:System.currentTimeMillis()-historyRange;List<HistoryStore.Point> pts=HistoryStore.readSince(this,since,800);if(powerChart!=null)powerChart.setPoints(pts);if(socChart!=null)socChart.setPoints(pts);refreshDeviceChart();}
+    private void refreshDeviceChart(){if(deviceChart==null||historyProfileId.isEmpty())return;long since=historyRange==0?0:System.currentTimeMillis()-historyRange;ProfileStore.Profile p=profileStore.getById(historyProfileId);deviceChart.setData(HistoryStore.readForProfile(this,historyProfileId,since,500),historyProfileId,p==null?"Gerät":p.name);}
 
-        LinearLayout hero = card();
-        hero.addView(title("LADEGESCHWINDIGKEIT · LIVE"));
-        speedBig = text("— mA", 46, OK, true);
-        speedBig.setPadding(0, dp(7), 0, dp(2));
-        hero.addView(speedBig);
-        speedSub = text("— A · — W netto zum Akku", 18, TEXT, true);
-        hero.addView(speedSub);
-        liveOrigin = text("Warte auf BatteryManager-Livewert…", 11, MUTED, false);
-        liveOrigin.setPadding(0, dp(5), 0, dp(10));
-        hero.addView(liveOrigin);
-        metric(hero, "batteryVoltage", "Akkuspannung · LIVE");
-        metric(hero, "batteryPct", "Smartphone-SOC");
-        metric(hero, "cycleId", "Ladezyklus");
-        metric(hero, "plugType", "Aktive Quelle");
-        root.addView(hero, mb());
+    private void promptSourceSelection(){if(!isPlugged()){toast("Aktuell ist keine externe Ladequelle angeschlossen.");return;}List<ProfileStore.Profile> opts=new ArrayList<>();for(ProfileStore.Profile p:profileStore.loadActiveInventory())if(!"CABLE".equals(p.type))opts.add(p);ArrayList<String> names=new ArrayList<>();for(ProfileStore.Profile p:opts)names.add(p.name+" · "+p.type+(p.socKnown?" · "+fmt0(p.estimatedSoc)+"%":""));names.add("＋ Neues Gerät / neue Powerbank anlegen");new AlertDialog.Builder(this).setTitle("Welche Quelle ist jetzt angeschlossen?").setMessage("Android erkennt den Stromanschluss, aber nicht bei jedem USB-C-Gerät das Modell. Bitte Profil bestätigen; es werden keine Demo-Geräte angenommen.").setItems(names.toArray(new String[0]),(d,which)->{if(which<opts.size()){ProfileStore.Profile p=opts.get(which);p.lastSeenAt=System.currentTimeMillis();profileStore.saveProfile(p);profileStore.setActiveId(p.id);if(p.isEnergyStore()&&!p.socKnown)askManualSoc(p);else maybeSuggestBridge(p);}else showProfileDialog(null);updateVisible();}).show();}
+    private void askManualSoc(ProfileStore.Profile p){EditText e=input("","Anzeige an Powerbank in %");new AlertDialog.Builder(this).setTitle("SOC bestätigen · "+p.name).setMessage("Falls die Powerbank selbst einen Prozentwert anzeigt, hier eintragen. Ohne Bestätigung bleibt der SOC unbekannt.").setView(e).setNegativeButton("UNBEKANNT",(d,w)->maybeSuggestBridge(p)).setPositiveButton("BESTÄTIGEN",(d,w)->{String s=e.getText().toString().trim();if(!s.isEmpty()){p.estimatedSoc=clamp(dbl(s,0),0,100);p.socKnown=true;p.socOrigin="MANUAL";p.lastValidatedSoc=p.estimatedSoc;p.lastValidationAt=System.currentTimeMillis();profileStore.saveProfile(p);}maybeSuggestBridge(p);updateVisible();}).show();}
+    private void maybeSuggestBridge(ProfileStore.Profile p){List<BridgeStore.Bridge> matches=new ArrayList<>();for(BridgeStore.Bridge br:bridgeStore.load())if(!br.archived&&(br.sourceId.equals(p.id)||br.batteryAId.equals(p.id)||br.batteryBId.equals(p.id)))matches.add(br);if(matches.isEmpty())return;BridgeStore.Bridge br=matches.get(0);new AlertDialog.Builder(this).setTitle("Bridge-Vorschlag").setMessage("Zu diesem Profil passt die gespeicherte Bridge:\n\n"+br.name+"\n"+bridgeDescription(br)).setNegativeButton("NEIN",null).setPositiveButton("AKTIVIEREN",(d,w)->{bridgeStore.activate(br.id);updateVisible();}).show();}
 
-        LinearLayout total = card();
-        total.addView(title("AKKU-GESAMTLEISTE · ALLE GERÄTE"));
-        aggregateText = text("Gesamt: — %", 27, WARN, true);
-        total.addView(aggregateText);
-        aggregateBar = progressBar();
-        total.addView(aggregateBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(18)));
-        phoneSocText = text("Smartphone: — %", 14, TEXT, true);
-        phoneSocText.setPadding(0, dp(10), 0, dp(3));
-        total.addView(phoneSocText);
-        phoneBar = progressBar();
-        total.addView(phoneBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12)));
-        sourceSocText = text("Aktive Quelle: —", 14, TEXT, true);
-        sourceSocText.setPadding(0, dp(10), 0, dp(3));
-        total.addView(sourceSocText);
-        sourceBar = progressBar();
-        total.addView(sourceBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12)));
-        breakdownText = text("Profile werden geladen…", 12, MUTED, false);
-        breakdownText.setPadding(0, dp(10), 0, 0);
-        total.addView(breakdownText);
-        root.addView(total, mb());
+    private void choosePhoto(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("image/*");i.addCategory(Intent.CATEGORY_OPENABLE);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);startActivityForResult(i,REQ_PHOTO);}
+    @Override protected void onActivityResult(int req,int res,Intent data){super.onActivityResult(req,res,data);if(res!=RESULT_OK||data==null)return;if(req==REQ_PHOTO){Uri u=data.getData();if(u==null||pendingPhotoProfile==null)return;try{getContentResolver().takePersistableUriPermission(u,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}if(!pendingPhotoProfile.photoUris.contains(u.toString()))pendingPhotoProfile.photoUris.add(u.toString());profileStore.saveProfile(pendingPhotoProfile);runOcr(u,pendingPhotoProfile);}else if(req==REQ_EXPORT){Uri u=data.getData();if(u!=null)try{OutputStream os=getContentResolver().openOutputStream(u);os.write(pendingExport.getBytes("UTF-8"));os.close();toast("Bericht gespeichert.");}catch(Exception e){toast("Export fehlgeschlagen: "+e.getMessage());}}}
+    private void runOcr(Uri u,ProfileStore.Profile p){try{InputImage img=InputImage.fromFilePath(this,u);TextRecognizer r=TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);r.process(img).addOnSuccessListener(t->{p.ocrText=t.getText();extractOcr(t.getText(),p);profileStore.saveProfile(p);toast("OCR übernommen. Profil bitte prüfen.");showTab(Tab.PROFILES);}).addOnFailureListener(e->toast("OCR fehlgeschlagen"));}catch(Exception e){toast("Bild konnte nicht gelesen werden.");}}
+    private void extractOcr(String text,ProfileStore.Profile p){Matcher m=Pattern.compile("(?i)([0-9][0-9., ]{2,})\\s*mAh").matcher(text);if(m.find())p.capacityMah=dbl(clean(m.group(1)),p.capacityMah);Matcher wh=Pattern.compile("(?i)([0-9]+(?:[.,][0-9]+)?)\\s*Wh").matcher(text);if(wh.find()&&p.capacityMah>0){double e=dbl(clean(wh.group(1)),0);if(e>0)p.nominalV=e/(p.capacityMah/1000.0);}Matcher v=Pattern.compile("(?i)([0-9]+(?:[.,][0-9]+)?)\\s*V").matcher(text);if(v.find())p.profileMaxVoltage=dbl(clean(v.group(1)),p.profileMaxVoltage);Matcher a=Pattern.compile("(?i)([0-9]+(?:[.,][0-9]+)?)\\s*A").matcher(text);if(a.find())p.profileMaxCurrent=dbl(clean(a.group(1)),p.profileMaxCurrent);}
+    private void testCable(ProfileStore.Profile p){long since=System.currentTimeMillis()-5*60*1000L;List<HistoryStore.Point> pts=HistoryStore.readSince(this,since,0);ArrayList<Double> vs=new ArrayList<>(),as=new ArrayList<>();for(HistoryStore.Point x:pts){if(!Double.isNaN(x.sourceV))vs.add(x.sourceV);if(!Double.isNaN(x.sourceA))as.add(Math.abs(x.sourceA));}if(vs.size()<5){new AlertDialog.Builder(this).setTitle("Kabeltest nicht vollständig möglich").setMessage("Dieses Android-Gerät liefert aktuell nicht genug direkte VBUS-Messwerte. Es wird keine erfundene Kabelqualität ausgegeben. Maximalleistung und E-Marker können weiterhin im Profil dokumentiert werden.").setPositiveButton("OK",null).show();return;}double min=Collections.min(vs),max=Collections.max(vs),avg=0;for(double x:vs)avg+=x;avg/=vs.size();double drop=max-min;double meanA=0;for(double x:as)meanA+=x;meanA=as.isEmpty()?0:meanA/as.size();double score=clamp(100-(drop/Math.max(.1,avg))*500,0,100);p.cableVoltageDrop=drop;p.cableQuality=score;p.cableResistanceOhm=meanA>.05?drop/meanA:Double.NaN;profileStore.saveProfile(p);new AlertDialog.Builder(this).setTitle("Kabeltest").setMessage("Stabilitäts-/Spannungsabfall-Score: "+fmt0(score)+"/100\nVBUS-Bereich: "+fmt3(min)+"–"+fmt3(max)+" V\nΔ: "+fmt3(drop)+" V"+(Double.isNaN(p.cableResistanceOhm)?"":"\n≈ "+fmt3(p.cableResistanceOhm)+" Ω")+"\n\nBewertung basiert ausschließlich auf den tatsächlich verfügbaren Messwerten.").setPositiveButton("OK",null).show();}
 
-        LinearLayout charts = card();
-        charts.addView(title("LIVE-VERLAUF · LEISTUNG UND SOC"));
-        chartRangeLabel = text("Zeitraum: 1 Stunde", 12, MUTED, true);
-        chartRangeLabel.setPadding(0, dp(4), 0, dp(6));
-        charts.addView(chartRangeLabel);
-        LinearLayout ranges = new LinearLayout(this);
-        ranges.setOrientation(LinearLayout.HORIZONTAL);
-        addRangeButton(ranges, "15m", 15L * 60L * 1000L);
-        addRangeButton(ranges, "1h", 60L * 60L * 1000L);
-        addRangeButton(ranges, "6h", 6L * 60L * 60L * 1000L);
-        addRangeButton(ranges, "24h", 24L * 60L * 60L * 1000L);
-        addRangeButton(ranges, "ALLE", 0L);
-        charts.addView(ranges);
-        TextView ptitle = text("Netto-Akkuleistung / Quellenleistung · W", 12, TEXT, true);
-        ptitle.setPadding(0, dp(12), 0, dp(4));
-        charts.addView(ptitle);
-        powerChart = new HistoryChartView(this, HistoryChartView.Mode.POWER);
-        charts.addView(powerChart, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(230)));
-        TextView stitle = text("SOC-Verlauf · Smartphone / aktive Quelle / Gesamt", 12, TEXT, true);
-        stitle.setPadding(0, dp(12), 0, dp(4));
-        charts.addView(stitle);
-        socChart = new HistoryChartView(this, HistoryChartView.Mode.SOC);
-        charts.addView(socChart, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(230)));
-        TextView gap = text("Rote vertikale Marker = Start/Stop eines Ladezyklus. Historie bleibt über Unterbrechungen und App-Neustarts erhalten.", 11, MUTED, false);
-        gap.setPadding(0, dp(8), 0, 0);
-        charts.addView(gap);
-        root.addView(charts, mb());
+    private void exportReport(){try{JSONObject o=new JSONObject();o.put("app","CCOP LadeMonitor v9 LIVE INVENTORY");o.put("createdAt",System.currentTimeMillis());o.put("telemetry",telemetry);JSONArray ps=new JSONArray();for(ProfileStore.Profile p:profileStore.load())ps.put(p.toJson());o.put("profiles",ps);JSONArray bs=new JSONArray();for(BridgeStore.Bridge x:bridgeStore.load())bs.put(x.toJson());o.put("bridges",bs);o.put("historyCount",HistoryStore.count(this));o.put("noDemoDataPolicy",true);pendingExport=o.toString(2);Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.setType("application/json");i.putExtra(Intent.EXTRA_TITLE,"ccop-lademonitor-report-"+new SimpleDateFormat("yyyyMMdd-HHmm",Locale.GERMANY).format(new Date())+".json");startActivityForResult(i,REQ_EXPORT);}catch(Exception e){toast("Bericht konnte nicht erstellt werden.");}}
 
-        LinearLayout energy = card();
-        energy.addView(title("ENERGIE · ZEIT · ZYKLEN"));
-        metric(energy, "cycleNetWh", "Netto in Akku · aktueller Zyklus");
-        metric(energy, "cycleSourceWh", "Quelle · aktueller Zyklus");
-        metric(energy, "totalNetWh", "Netto in Akku · Gesamt");
-        metric(energy, "totalSourceWh", "Quelle · Gesamt geschätzt/gemessen");
-        metric(energy, "historyCount", "Historische Messpunkte");
-        metric(energy, "chargeCounterMah", "Android Charge Counter");
-        root.addView(energy, mb());
+    private Spinner profileSpinner(List<ProfileStore.Profile> list,String selected){Spinner s=new Spinner(this);ArrayList<String> n=new ArrayList<>();for(ProfileStore.Profile p:list)n.add(p.name);if(n.isEmpty())n.add("— nicht vorhanden —");s.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,n));for(int i=0;i<list.size();i++)if(list.get(i).id.equals(selected))s.setSelection(i);return s;}
+    private String idAt(List<ProfileStore.Profile> list,Spinner s){return list.isEmpty()?"":list.get(Math.min(s.getSelectedItemPosition(),list.size()-1)).id;}
+    private String profileName(String id){ProfileStore.Profile p=profileStore.getById(id);return p==null?"—":p.name;}
+    private String socLabel(ProfileStore.Profile p){return p.socKnown?fmt0(p.estimatedSoc)+"%":"unbekannt";}
 
-        LinearLayout source = card();
-        source.addView(title("AKTIVE QUELLE · LIVE / PROFIL"));
-        sourceStatus = text("Warte auf Quellendaten…", 12, MUTED, true);
-        sourceStatus.setPadding(0, dp(4), 0, dp(8));
-        source.addView(sourceStatus);
-        metric(source, "sourceV", "USB-C/VBUS Spannung · LIVE");
-        metric(source, "sourceA", "USB-C/IBUS Strom · LIVE");
-        metric(source, "sourceW", "Quellenleistung");
-        metric(source, "sourceType", "USB/PD Typ");
-        metric(source, "profileMax", "Android Profil / MAX");
-        root.addView(source, mb());
-
-        LinearLayout profileCard = card();
-        profileCard.addView(title("GERÄTE- UND QUELLENPROFILE"));
-        profileSpinner = new Spinner(this);
-        profileCard.addView(profileSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-        profileSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                if (position >= 0 && position < profiles.size()) loadProfileIntoForm(profiles.get(position));
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
-        });
-        nameEdit = edit("Name / Modell");
-        profileCard.addView(nameEdit);
-        typeSpinner = new Spinner(this);
-        ArrayAdapter<String> typeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"POWERBANK", "EXTERNAL_BATTERY", "CHARGER"});
-        typeSpinner.setAdapter(typeAdapter);
-        profileCard.addView(typeSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
-        LinearLayout row1 = horizontal();
-        capacityEdit = edit("Kapazität mAh"); nominalVEdit = edit("Nennspannung V");
-        row1.addView(capacityEdit, half()); row1.addView(nominalVEdit, halfRight()); profileCard.addView(row1);
-        LinearLayout row2 = horizontal();
-        socEdit = edit("SOC %"); efficiencyEdit = edit("Wirkungsgrad %");
-        row2.addView(socEdit, half()); row2.addView(efficiencyEdit, halfRight()); profileCard.addView(row2);
-        LinearLayout row3 = horizontal();
-        profileMaxVEdit = edit("Profil max V"); profileMaxAEdit = edit("Profil max A");
-        row3.addView(profileMaxVEdit, half()); row3.addView(profileMaxAEdit, halfRight()); profileCard.addView(row3);
-        noteEdit = edit("Profil-Notiz"); profileCard.addView(noteEdit);
-        passthroughCheck = new CheckBox(this);
-        passthroughCheck.setText("Pass-through / Netz + Powerbank gleichzeitig");
-        passthroughCheck.setTextColor(TEXT);
-        profileCard.addView(passthroughCheck);
-        LinearLayout pbuttons1 = horizontal();
-        Button save = button("PROFIL SPEICHERN"); save.setOnClickListener(v -> saveProfileFromForm(false));
-        Button active = button("ALS QUELLE AKTIV"); active.setOnClickListener(v -> saveProfileFromForm(true));
-        pbuttons1.addView(save, halfButton()); pbuttons1.addView(active, halfButtonRight()); profileCard.addView(pbuttons1);
-        LinearLayout pbuttons2 = horizontal();
-        Button validate = button("SOC VALIDIEREN"); validate.setOnClickListener(v -> validateSoc());
-        Button reset = button("100% · NEU GELADEN"); reset.setOnClickListener(v -> resetSourceSoc());
-        pbuttons2.addView(validate, halfButton()); pbuttons2.addView(reset, halfButtonRight()); profileCard.addView(pbuttons2);
-        LinearLayout pbuttons3 = horizontal();
-        Button newP = button("NEUES PROFIL"); newP.setOnClickListener(v -> newProfile());
-        Button deleteP = button("PROFIL LÖSCHEN"); deleteP.setOnClickListener(v -> deleteProfile());
-        pbuttons3.addView(newP, halfButton()); pbuttons3.addView(deleteP, halfButtonRight()); profileCard.addView(pbuttons3);
-        profileStatus = text("Profil bereit", 11, MUTED, false);
-        profileStatus.setPadding(0, dp(8), 0, 0);
-        profileCard.addView(profileStatus);
-        root.addView(profileCard, mb());
-
-        LinearLayout photo = card();
-        photo.addView(title("FOTOIMPORT · TYPENSCHILD / MODELL"));
-        TextView ph = text("Foto auswählen → OCR liest Name, mAh, Wh, V und A als Profilvorschlag. Originaltext bleibt lokal im Profil.", 12, MUTED, false);
-        ph.setPadding(0, dp(4), 0, dp(8)); photo.addView(ph);
-        Button importPhoto = button("FOTO IMPORTIEREN + OCR"); importPhoto.setOnClickListener(v -> choosePhoto()); photo.addView(importPhoto);
-        ocrStatus = text("Noch kein Foto eingelesen", 11, MUTED, false); ocrStatus.setPadding(0, dp(8), 0, 0); photo.addView(ocrStatus);
-        root.addView(photo, mb());
-
-        LinearLayout report = card();
-        report.addView(title("REPORTING · BUG-REPORT · ENTWICKLUNGSAUFTRAG"));
-        bugStatus = text("Automatische Prüfung läuft…", 12, MUTED, false); bugStatus.setPadding(0, dp(4), 0, dp(8)); report.addView(bugStatus);
-        reportNoteEdit = edit("Notiz / Ergänzung für Bericht"); report.addView(reportNoteEdit);
-        LinearLayout rbuttons = horizontal();
-        Button export = button("BERICHT EXPORTIEREN"); export.setOnClickListener(v -> exportReport(false));
-        Button bug = button("BUG-REPORT EXPORT"); bug.setOnClickListener(v -> exportReport(true));
-        rbuttons.addView(export, halfButton()); rbuttons.addView(bug, halfButtonRight()); report.addView(rbuttons);
-        LinearLayout monitorButtons = horizontal();
-        Button start = button("MONITOR START"); start.setOnClickListener(v -> startMonitor());
-        Button stop = button("MONITOR STOP"); stop.setOnClickListener(v -> stopMonitor());
-        monitorButtons.addView(start, halfButton()); monitorButtons.addView(stop, halfButtonRight()); report.addView(monitorButtons);
-        Button clear = button("VERLAUF LÖSCHEN"); clear.setOnClickListener(v -> { HistoryStore.clear(this); refreshCharts(); });
-        report.addView(clear);
-        root.addView(report, mb());
-
-        TextView footer = text("Local First · Hintergrund-Monitoring · keine Cloud · keine Demo-Livewerte", 10, MUTED, false);
-        footer.setGravity(Gravity.CENTER); root.addView(footer);
-        return scroll;
-    }
-
-    private void updateFromTelemetry(Intent i) {
-        try {
-            lastTelemetry = intentToJson(i);
-            boolean charging = i.getBooleanExtra("charging", false);
-            double ma = getDouble(i, "batteryMa");
-            double a = getDouble(i, "batteryA");
-            double w = getDouble(i, "batteryW");
-            double bv = getDouble(i, "batteryV");
-            double phone = getDouble(i, "phonePct");
-            double agg = getDouble(i, "aggregateSoc");
-            double sourceSoc = getDouble(i, "sourceSoc");
-            lastSourceDirectSoc = getDouble(i, "sourceDirectSoc");
-
-            speedBig.setText(!Double.isNaN(ma) ? String.format(Locale.GERMANY, "%.0f mA", Math.abs(ma)) : "— mA");
-            speedBig.setTextColor(charging ? OK : WARN);
-            speedSub.setText((!Double.isNaN(a) ? String.format(Locale.GERMANY, "%.3f A", Math.abs(a)) : "— A") + " · " +
-                    (!Double.isNaN(w) ? String.format(Locale.GERMANY, "%.2f W netto zum Akku", Math.abs(w)) : "— W netto zum Akku"));
-            liveOrigin.setText(charging ? "BatteryManager CURRENT_NOW · echte Netto-Akkuseite" : "Aktuell kein aktiver Ladezyklus · Verlauf bleibt erhalten");
-            set("batteryVoltage", !Double.isNaN(bv) ? fmt(bv, 3) + " V" : "—", !Double.isNaN(bv) ? OK : MUTED);
-            set("batteryPct", !Double.isNaN(phone) ? fmt(phone, 0) + " %" : "—", TEXT);
-            set("cycleId", "#" + i.getIntExtra("cycleId", 0), BLUE);
-            set("plugType", i.getStringExtra("plugType") != null ? i.getStringExtra("plugType") : "—", charging ? OK : MUTED);
-
-            set("cycleNetWh", fmt(i.getDoubleExtra("cycleNetWh", 0.0), 4) + " Wh", TEXT);
-            set("cycleSourceWh", fmt(i.getDoubleExtra("cycleSourceWh", 0.0), 4) + " Wh", TEXT);
-            set("totalNetWh", fmt(i.getDoubleExtra("totalNetWh", 0.0), 3) + " Wh", TEXT);
-            set("totalSourceWh", fmt(i.getDoubleExtra("totalSourceWh", 0.0), 3) + " Wh", TEXT);
-            set("historyCount", String.valueOf(i.getLongExtra("historyCount", 0)), TEXT);
-            double cc = getDouble(i, "chargeCounterMah"); set("chargeCounterMah", !Double.isNaN(cc) ? fmt(cc, 0) + " mAh" : "—", TEXT);
-
-            double sv = getDouble(i, "sourceV"), sa = getDouble(i, "sourceA");
-            double swExact = getDouble(i, "sourceExactW"), swEff = getDouble(i, "sourceEffectiveW");
-            boolean estimated = i.getBooleanExtra("sourcePowerEstimated", false);
-            set("sourceV", !Double.isNaN(sv) ? fmt(sv, 3) + " V · LIVE" : "nicht freigegeben", !Double.isNaN(sv) ? OK : RED);
-            set("sourceA", !Double.isNaN(sa) ? fmt(sa, 3) + " A · LIVE" : "nicht freigegeben", !Double.isNaN(sa) ? OK : RED);
-            set("sourceW", !Double.isNaN(swExact) ? fmt(swExact, 2) + " W · LIVE" : (!Double.isNaN(swEff) ? "≈ " + fmt(swEff, 2) + " W · aus Netto/η" : "—"), !Double.isNaN(swExact) ? OK : WARN);
-            set("sourceType", i.getStringExtra("sourceType") != null ? i.getStringExtra("sourceType") : "nicht gemeldet", BLUE);
-            double mv = getDouble(i, "profileMaxV"), mA = getDouble(i, "profileMaxA");
-            set("profileMax", (!Double.isNaN(mv) && !Double.isNaN(mA)) ? fmt(mv, 1) + " V × " + fmt(mA, 1) + " A = " + fmt(mv * mA, 1) + " W MAX" : "—", BLUE);
-            sourceStatus.setText(!Double.isNaN(sv) ? "Direkte Quellentelemetrie aktiv" : (estimated ? "Quellenseite gesperrt · Quellenleistung als Modellwert aus Netto-Akkuleistung/Wirkungsgrad" : "Quellenseite nicht verfügbar"));
-            sourceStatus.setTextColor(!Double.isNaN(sv) ? OK : WARN);
-
-            if (!Double.isNaN(agg)) {
-                aggregateText.setText("Gesamt: " + fmt(agg, 1) + " %");
-                aggregateBar.setProgress((int) Math.round(agg * 10));
-            }
-            if (!Double.isNaN(phone)) {
-                phoneSocText.setText("Smartphone: " + fmt(phone, 1) + " %");
-                phoneBar.setProgress((int) Math.round(phone * 10));
-            }
-            String activeName = i.getStringExtra("profileName");
-            if (!Double.isNaN(sourceSoc)) {
-                sourceSocText.setText((activeName != null ? activeName : "Aktive Quelle") + ": " + fmt(sourceSoc, 1) + " %" + (!Double.isNaN(lastSourceDirectSoc) ? " · DIREKT" : " · MODELL"));
-                sourceBar.setProgress((int) Math.round(sourceSoc * 10));
-            } else {
-                sourceSocText.setText((activeName != null ? activeName : "Aktive Quelle") + ": kein Kapazitäts-SOC");
-                sourceBar.setProgress(0);
-            }
-
-            updateBreakdown(phone);
-            updateBugStatus(i);
-            long now = System.currentTimeMillis();
-            if (now - lastChartRefresh > 4500L) { refreshCharts(); lastChartRefresh = now; }
-        } catch (Throwable t) {
-            bugStatus.setText("UI-Telemetriefehler: " + t.getClass().getSimpleName());
-            bugStatus.setTextColor(RED);
-        }
-    }
-
-    private void refreshCharts() {
-        long since = chartRangeMs == 0 ? 0 : System.currentTimeMillis() - chartRangeMs;
-        List<HistoryStore.Point> pts = HistoryStore.readSince(this, since, 2500);
-        if (powerChart != null) powerChart.setPoints(pts);
-        if (socChart != null) socChart.setPoints(pts);
-    }
-
-    private void addRangeButton(LinearLayout row, String label, long rangeMs) {
-        Button b = button(label);
-        b.setOnClickListener(v -> {
-            chartRangeMs = rangeMs;
-            chartRangeLabel.setText("Zeitraum: " + (rangeMs == 0 ? "Gesamt" : label));
-            refreshCharts();
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1f);
-        lp.setMargins(0, 0, dp(5), 0);
-        row.addView(b, lp);
-    }
-
-    private void reloadProfiles(String selectId) {
-        profiles = profileStore.load();
-        List<String> names = new ArrayList<>();
-        int selected = 0;
-        for (int i = 0; i < profiles.size(); i++) {
-            ProfileStore.Profile p = profiles.get(i);
-            names.add(p.name + (p.id.equals(profileStore.getActiveId()) ? " · AKTIV" : ""));
-            if (p.id.equals(selectId)) selected = i;
-        }
-        ArrayAdapter<String> a = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, names);
-        profileSpinner.setAdapter(a);
-        if (!profiles.isEmpty()) profileSpinner.setSelection(Math.min(selected, profiles.size() - 1));
-    }
-
-    private void loadProfileIntoForm(ProfileStore.Profile p) {
-        editingProfile = p;
-        nameEdit.setText(p.name);
-        capacityEdit.setText(fmtPlain(p.capacityMah));
-        nominalVEdit.setText(fmtPlain(p.nominalV));
-        socEdit.setText(fmtPlain(p.estimatedSoc));
-        efficiencyEdit.setText(fmtPlain(p.efficiency * 100.0));
-        profileMaxVEdit.setText(p.profileMaxVoltage > 0 ? fmtPlain(p.profileMaxVoltage) : "");
-        profileMaxAEdit.setText(p.profileMaxCurrent > 0 ? fmtPlain(p.profileMaxCurrent) : "");
-        noteEdit.setText(p.note);
-        passthroughCheck.setChecked(p.passthrough);
-        selectType(p.type);
-        profileStatus.setText("Wh: " + fmt(p.capacityWh(), 2) + " · SOC-Modell: " + fmt(p.estimatedSoc, 1) + "% · Validierungsabweichung: " + fmt(p.lastValidationDelta, 1) + " %-Pkt.");
-        ocrStatus.setText(p.ocrText == null || p.ocrText.isEmpty() ? "Kein OCR-Text gespeichert" : "OCR im Profil vorhanden · " + Math.min(9999, p.ocrText.length()) + " Zeichen");
-    }
-
-    private void saveProfileFromForm(boolean activate) {
-        if (editingProfile == null) editingProfile = new ProfileStore.Profile();
-        editingProfile.name = valueOr(nameEdit.getText().toString().trim(), "Powerbank");
-        editingProfile.type = typeSpinner.getSelectedItem() != null ? typeSpinner.getSelectedItem().toString() : "POWERBANK";
-        editingProfile.capacityMah = parse(capacityEdit.getText().toString(), editingProfile.capacityMah);
-        editingProfile.nominalV = parse(nominalVEdit.getText().toString(), editingProfile.nominalV);
-        editingProfile.estimatedSoc = clamp(parse(socEdit.getText().toString(), editingProfile.estimatedSoc), 0, 100);
-        editingProfile.efficiency = clamp(parse(efficiencyEdit.getText().toString(), editingProfile.efficiency * 100.0) / 100.0, 0.5, 1.0);
-        editingProfile.profileMaxVoltage = parse(profileMaxVEdit.getText().toString(), 0.0);
-        editingProfile.profileMaxCurrent = parse(profileMaxAEdit.getText().toString(), 0.0);
-        editingProfile.note = noteEdit.getText().toString();
-        editingProfile.passthrough = passthroughCheck.isChecked();
-        profileStore.saveProfile(editingProfile);
-        if (activate) profileStore.setActiveId(editingProfile.id);
-        reloadProfiles(editingProfile.id);
-        profileStatus.setText(activate ? "Gespeichert und als aktive Quelle gesetzt" : "Profil gespeichert");
-    }
-
-    private void newProfile() {
-        editingProfile = new ProfileStore.Profile();
-        editingProfile.name = "Neue Powerbank";
-        loadProfileIntoForm(editingProfile);
-        profileStatus.setText("Neues Profil · noch nicht gespeichert");
-    }
-
-    private void deleteProfile() {
-        if (editingProfile == null) return;
-        String id = editingProfile.id;
-        profileStore.deleteProfile(id);
-        editingProfile = null;
-        reloadProfiles(profileStore.getActiveId());
-        profileStatus.setText("Profil gelöscht");
-    }
-
-    private void validateSoc() {
-        if (editingProfile == null) return;
-        double observed = clamp(parse(socEdit.getText().toString(), editingProfile.estimatedSoc), 0, 100);
-        double before = editingProfile.estimatedSoc;
-        editingProfile.lastValidationDelta = observed - before;
-        editingProfile.lastValidatedSoc = observed;
-        editingProfile.estimatedSoc = observed;
-        editingProfile.lastValidationAt = System.currentTimeMillis();
-        profileStore.saveProfile(editingProfile);
-        reloadProfiles(editingProfile.id);
-        profileStatus.setText("SOC validiert: " + fmt(observed, 1) + "% · Abweichung zum Modell: " + fmt(editingProfile.lastValidationDelta, 1) + " %-Pkt.");
-    }
-
-    private void resetSourceSoc() {
-        if (editingProfile == null) return;
-        editingProfile.estimatedSoc = 100.0;
-        editingProfile.lastValidatedSoc = 100.0;
-        editingProfile.lastValidationAt = System.currentTimeMillis();
-        editingProfile.cumulativeSourceWh = 0.0;
-        editingProfile.lastValidationDelta = 0.0;
-        profileStore.saveProfile(editingProfile);
-        socEdit.setText("100");
-        reloadProfiles(editingProfile.id);
-        profileStatus.setText("Quelle als vollständig neu geladen markiert · 100%");
-    }
-
-    private void updateBreakdown(double phonePct) {
-        StringBuilder sb = new StringBuilder();
-        double phoneWh = profileStore.getPhoneCapacityMah() / 1000.0 * profileStore.getPhoneNominalV();
-        if (!Double.isNaN(phonePct)) sb.append("Smartphone: ").append(fmt(phonePct,1)).append("% · ≈ ").append(fmt(phoneWh * phonePct / 100.0, 2)).append("/").append(fmt(phoneWh,2)).append(" Wh\n");
-        for (ProfileStore.Profile p : profileStore.load()) {
-            if ("CHARGER".equalsIgnoreCase(p.type)) {
-                sb.append(p.name).append(": Netzteil/Ladegerät · keine gespeicherte Akku-Kapazität\n");
-                continue;
-            }
-            double full = p.capacityWh();
-            double rem = full * clamp(p.estimatedSoc, 0, 100) / 100.0;
-            sb.append(p.name).append(": ").append(fmt(p.estimatedSoc,1)).append("% · ").append(fmt(rem,2)).append("/").append(fmt(full,2)).append(" Wh");
-            if (p.passthrough) sb.append(" · PASS-THROUGH");
-            if (p.id.equals(profileStore.getActiveId())) sb.append(" · AKTIV");
-            sb.append('\n');
-        }
-        breakdownText.setText(sb.toString().trim());
-    }
-
-    private void choosePhoto() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.setType("image/*");
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        startActivityForResult(i, REQ_PHOTO);
-    }
-
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null) return;
-        if (requestCode == REQ_PHOTO) {
-            Uri uri = data.getData();
-            if (uri == null) return;
-            try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignored) { }
-            runOcr(uri);
-        } else if (requestCode == REQ_EXPORT_REPORT || requestCode == REQ_EXPORT_BUG) {
-            Uri uri = data.getData();
-            if (uri == null) return;
-            try {
-                OutputStream os = getContentResolver().openOutputStream(uri);
-                if (os != null) { os.write(pendingExportContent.getBytes(java.nio.charset.StandardCharsets.UTF_8)); os.close(); }
-                bugStatus.setText("Export gespeichert"); bugStatus.setTextColor(OK);
-            } catch (Exception e) {
-                bugStatus.setText("Exportfehler: " + e.getMessage()); bugStatus.setTextColor(RED);
-            }
-        }
-    }
-
-    private void runOcr(Uri uri) {
-        ocrStatus.setText("OCR läuft…");
-        try {
-            InputImage img = InputImage.fromFilePath(this, uri);
-            TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-            recognizer.process(img)
-                    .addOnSuccessListener(result -> {
-                        String raw = result.getText();
-                        if (editingProfile == null) editingProfile = new ProfileStore.Profile();
-                        editingProfile.photoUri = uri.toString();
-                        editingProfile.ocrText = raw;
-                        applyOcrToForm(raw);
-                        profileStore.saveProfile(editingProfile);
-                        reloadProfiles(editingProfile.id);
-                        ocrStatus.setText("OCR erfolgreich · Werte als Profilvorschlag übernommen");
-                        ocrStatus.setTextColor(OK);
-                        recognizer.close();
-                    })
-                    .addOnFailureListener(e -> {
-                        ocrStatus.setText("OCR fehlgeschlagen: " + e.getClass().getSimpleName());
-                        ocrStatus.setTextColor(RED);
-                        recognizer.close();
-                    });
-        } catch (Exception e) {
-            ocrStatus.setText("Foto konnte nicht gelesen werden: " + e.getMessage());
-            ocrStatus.setTextColor(RED);
-        }
-    }
-
-    private void applyOcrToForm(String raw) {
-        if (raw == null) return;
-        String normalized = raw.replace(',', '.');
-        Matcher mah = Pattern.compile("(?i)(\\d{3,6})\\s*mAh").matcher(normalized);
-        if (mah.find()) capacityEdit.setText(mah.group(1));
-        Matcher wh = Pattern.compile("(?i)(\\d{1,4}(?:\\.\\d{1,3})?)\\s*Wh").matcher(normalized);
-        double foundWh = wh.find() ? parse(wh.group(1), 0.0) : 0.0;
-        Matcher volts = Pattern.compile("(?i)(\\d{1,2}(?:\\.\\d{1,3})?)\\s*V").matcher(normalized);
-        if (volts.find()) {
-            double v = parse(volts.group(1), 0.0);
-            if (v >= 3.0 && v <= 4.5) nominalVEdit.setText(fmtPlain(v));
-            else if (v > 4.5 && v <= 30) profileMaxVEdit.setText(fmtPlain(v));
-        }
-        Matcher amps = Pattern.compile("(?i)(\\d{1,2}(?:\\.\\d{1,3})?)\\s*A(?:mp)?").matcher(normalized);
-        if (amps.find()) profileMaxAEdit.setText(amps.group(1));
-        if (foundWh > 0 && (capacityEdit.getText().toString().trim().isEmpty() || parse(capacityEdit.getText().toString(), 0) <= 0)) {
-            double v = parse(nominalVEdit.getText().toString(), 3.7);
-            if (v > 0) capacityEdit.setText(fmtPlain(foundWh / v * 1000.0));
-        }
-        String[] lines = raw.split("\\r?\\n");
-        for (String line : lines) {
-            String x = line.trim();
-            if (x.length() >= 3 && x.length() <= 55 && !x.toLowerCase(Locale.ROOT).contains("mah") && !x.toLowerCase(Locale.ROOT).contains("wh")) {
-                if (nameEdit.getText().toString().trim().isEmpty() || nameEdit.getText().toString().startsWith("Neue")) nameEdit.setText(x);
-                break;
-            }
-        }
-        editingProfile.name = valueOr(nameEdit.getText().toString().trim(), editingProfile.name);
-        editingProfile.capacityMah = parse(capacityEdit.getText().toString(), editingProfile.capacityMah);
-        editingProfile.nominalV = parse(nominalVEdit.getText().toString(), editingProfile.nominalV);
-        editingProfile.profileMaxVoltage = parse(profileMaxVEdit.getText().toString(), editingProfile.profileMaxVoltage);
-        editingProfile.profileMaxCurrent = parse(profileMaxAEdit.getText().toString(), editingProfile.profileMaxCurrent);
-    }
-
-    private void updateBugStatus(Intent i) {
-        List<String> bugs = currentBugList(i);
-        if (bugs.isEmpty()) {
-            bugStatus.setText("Self-Test: keine aktuellen P0/P1-Datenlücken erkannt");
-            bugStatus.setTextColor(OK);
-        } else {
-            StringBuilder sb = new StringBuilder("Automatische Entwicklungsaufträge:\n");
-            for (String b : bugs) sb.append("• ").append(b).append('\n');
-            bugStatus.setText(sb.toString().trim());
-            bugStatus.setTextColor(WARN);
-        }
-    }
-
-    private List<String> currentBugList(Intent i) {
-        ArrayList<String> b = new ArrayList<>();
-        if (Double.isNaN(getDouble(i, "sourceV"))) b.add("P0 · Externe VBUS-Spannung wird vom OEM/Android-Pfad nicht freigegeben.");
-        if (Double.isNaN(getDouble(i, "sourceA"))) b.add("P0 · Externer IBUS-/USB-Strom wird nicht direkt freigegeben.");
-        ProfileStore.Profile p = profileStore.getActive();
-        if (p != null && !"CHARGER".equalsIgnoreCase(p.type) && Double.isNaN(getDouble(i, "sourceDirectSoc"))) b.add("P1 · Powerbank-SOC nicht direkt übertragen; Modellschätzung aktiv.");
-        if (p != null && p.passthrough && Double.isNaN(getDouble(i, "sourceDirectSoc"))) b.add("P0 · Pass-through aktiv ohne direkten Quellen-SOC; Restmenge ist nicht sicher ableitbar.");
-        if (p != null && !"CHARGER".equalsIgnoreCase(p.type) && p.capacityWh() <= 0) b.add("P1 · Profilkapazität fehlt; Restenergie kann nicht berechnet werden.");
-        return b;
-    }
-
-    private void exportReport(boolean bugOnly) {
-        try {
-            JSONObject report = buildReport(bugOnly);
-            pendingExportContent = report.toString(2);
-            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-            i.setType("application/json");
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.GERMANY).format(new Date());
-            i.putExtra(Intent.EXTRA_TITLE, bugOnly ? "CCOP-LadeMonitor-BugReport-" + stamp + ".json" : "CCOP-LadeMonitor-Report-" + stamp + ".json");
-            startActivityForResult(i, bugOnly ? REQ_EXPORT_BUG : REQ_EXPORT_REPORT);
-        } catch (Exception e) {
-            bugStatus.setText("Report konnte nicht erstellt werden: " + e.getMessage());
-            bugStatus.setTextColor(RED);
-        }
-    }
-
-    private JSONObject buildReport(boolean bugOnly) throws Exception {
-        JSONObject r = new JSONObject();
-        r.put("schema", "ccop-lademonitor-v6-report");
-        r.put("type", bugOnly ? "bug-development-order" : "full-energy-report");
-        r.put("createdAt", System.currentTimeMillis());
-        r.put("createdAtText", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.GERMANY).format(new Date()));
-        JSONObject device = new JSONObject();
-        device.put("manufacturer", Build.MANUFACTURER);
-        device.put("model", Build.MODEL);
-        device.put("device", Build.DEVICE);
-        device.put("sdk", Build.VERSION.SDK_INT);
-        device.put("androidId", Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID));
-        r.put("device", device);
-        r.put("telemetry", lastTelemetry);
-        r.put("historyPoints", HistoryStore.count(this));
-        r.put("note", reportNoteEdit.getText().toString());
-        JSONArray pa = new JSONArray();
-        for (ProfileStore.Profile p : profileStore.load()) pa.put(p.toJson());
-        r.put("profiles", pa);
-        r.put("activeProfileId", profileStore.getActiveId());
-        JSONArray bugs = new JSONArray();
-        Intent fake = jsonToIntent(lastTelemetry);
-        for (String b : currentBugList(fake)) bugs.put(b);
-        r.put("developmentOrders", bugs);
-        JSONObject acceptance = new JSONObject();
-        acceptance.put("liveBatteryCurrent", !Double.isNaN(optTelemetryDouble("batteryMa")));
-        acceptance.put("liveBatteryPower", !Double.isNaN(optTelemetryDouble("batteryW")));
-        acceptance.put("sourceVbus", !Double.isNaN(optTelemetryDouble("sourceV")));
-        acceptance.put("sourceIbus", !Double.isNaN(optTelemetryDouble("sourceA")));
-        acceptance.put("sourceSocDirect", !Double.isNaN(optTelemetryDouble("sourceDirectSoc")));
-        acceptance.put("persistentHistory", HistoryStore.count(this) > 0);
-        r.put("selfTest", acceptance);
-        return r;
-    }
-
-    private Intent jsonToIntent(JSONObject j) {
-        Intent i = new Intent();
-        java.util.Iterator<String> it = j.keys();
-        while (it.hasNext()) {
-            String k = it.next();
-            Object v = j.opt(k);
-            if (v instanceof Number) i.putExtra(k, ((Number) v).doubleValue());
-            else if (v instanceof Boolean) i.putExtra(k, (Boolean) v);
-            else if (v != null) i.putExtra(k, String.valueOf(v));
-        }
-        return i;
-    }
-
-    private double optTelemetryDouble(String k) {
-        return lastTelemetry.has(k) ? lastTelemetry.optDouble(k, Double.NaN) : Double.NaN;
-    }
-
-    private JSONObject intentToJson(Intent i) {
-        JSONObject o = new JSONObject();
-        Bundle b = i.getExtras();
-        if (b != null) {
-            for (String k : b.keySet()) {
-                Object v = b.get(k);
-                try { o.put(k, JSONObject.wrap(v)); } catch (Exception ignored) { }
-            }
-        }
-        return o;
-    }
-
-    private double getDouble(Intent i, String key) {
-        return i.hasExtra(key) ? i.getDoubleExtra(key, Double.NaN) : Double.NaN;
-    }
-
-    private ProgressBar progressBar() {
-        ProgressBar p = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        p.setMax(1000);
-        p.setProgress(0);
-        return p;
-    }
-
-    private EditText edit(String hint) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setHintTextColor(MUTED);
-        e.setTextColor(TEXT);
-        e.setSingleLine(true);
-        e.setPadding(dp(10), dp(8), dp(10), dp(8));
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.rgb(10, 16, 21));
-        gd.setCornerRadius(dp(11));
-        gd.setStroke(dp(1), LINE);
-        e.setBackground(gd);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
-        lp.setMargins(0, dp(5), 0, dp(5));
-        e.setLayoutParams(lp);
-        return e;
-    }
-
-    private void metric(LinearLayout parent, String key, String label) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(7), 0, dp(7));
-        TextView l = text(label, 13, MUTED, false);
-        TextView v = text("—", 14, TEXT, true);
-        v.setGravity(Gravity.END);
-        row.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(v, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.25f));
-        fields.put(key, v);
-        parent.addView(row);
-    }
-
-    private void set(String key, String value, int color) {
-        TextView t = fields.get(key);
-        if (t != null) { t.setText(value); t.setTextColor(color); }
-    }
-
-    private LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(16), dp(16), dp(16));
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(PANEL);
-        gd.setCornerRadius(dp(24));
-        gd.setStroke(dp(1), LINE);
-        c.setBackground(gd);
-        return c;
-    }
-
-    private LinearLayout horizontal() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); return l; }
-    private LinearLayout.LayoutParams half() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(54), 1f); lp.setMargins(0, dp(4), dp(4), dp(4)); return lp; }
-    private LinearLayout.LayoutParams halfRight() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(54), 1f); lp.setMargins(dp(4), dp(4), 0, dp(4)); return lp; }
-    private LinearLayout.LayoutParams halfButton() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(50), 1f); lp.setMargins(0, dp(5), dp(4), dp(5)); return lp; }
-    private LinearLayout.LayoutParams halfButtonRight() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(50), 1f); lp.setMargins(dp(4), dp(5), 0, dp(5)); return lp; }
-
-    private Button button(String label) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextSize(11);
-        b.setTextColor(TEXT);
-        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.rgb(24,32,40));
-        gd.setCornerRadius(dp(14));
-        gd.setStroke(dp(1), LINE);
-        b.setBackground(gd);
-        return b;
-    }
-
-    private TextView title(String s) { TextView t = text(s, 12, MUTED, true); t.setLetterSpacing(0.11f); return t; }
-    private TextView text(String s, int sp, int color, boolean bold) { TextView t = new TextView(this); t.setText(s); t.setTextSize(sp); t.setTextColor(color); if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); t.setLineSpacing(0,1.08f); return t; }
-    private LinearLayout.LayoutParams mb() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); lp.setMargins(0,0,0,dp(12)); return lp; }
-    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
-
-    private void selectType(String type) {
-        for (int i = 0; i < typeSpinner.getCount(); i++) if (typeSpinner.getItemAtPosition(i).toString().equalsIgnoreCase(type)) { typeSpinner.setSelection(i); return; }
-    }
-
-    private double parse(String s, double fallback) {
-        try { return Double.parseDouble(s.trim().replace(',', '.')); } catch (Exception e) { return fallback; }
-    }
-    private String fmt(double v, int d) { return String.format(Locale.GERMANY, "%." + d + "f", v); }
-    private String fmtPlain(double v) { return String.format(Locale.US, "%.2f", v).replaceAll("\\.?0+$", ""); }
-    private String valueOr(String s, String f) { return s == null || s.trim().isEmpty() ? f : s; }
-    private double clamp(double v, double a, double b) { return Math.max(a, Math.min(b, v)); }
+    private void startMonitor(){Intent i=new Intent(this,TelemetryService.class);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}
+    private boolean isPlugged(){return telemetry.optBoolean("plugged",false);}private boolean bool(String k){return telemetry.optBoolean(k,false);}private double val(String k){return telemetry.has(k)?telemetry.optDouble(k,Double.NaN):Double.NaN;}private String str(String k,String d){return telemetry.optString(k,d);}private boolean finite(double v){return !Double.isNaN(v)&&!Double.isInfinite(v);}private void set(String k,String s){TextView v=refs.get(k);if(v!=null)v.setText(s);}
+    private String formatHours(double h){if(!finite(h)||h<=0)return"—";int hh=(int)h,mm=(int)Math.round((h-hh)*60);return hh+" h "+mm+" min";}private String formatRange(long ms){long m=ms/60000;if(m<60)return m+" min";double h=m/60.0;return h<24?fmt1(h)+" h":fmt1(h/24)+" Tage";}
+    private String dateShort(long t){if(t<=0)return"noch nie";return new SimpleDateFormat("dd.MM. HH:mm",Locale.GERMANY).format(new Date(t));}
+    private String clean(String s){return s.replace(" ","").replace(",",".");}private double dbl(String s,double d){try{return Double.parseDouble(clean(s));}catch(Exception e){return d;}}private double clamp(double v,double a,double b){return Math.max(a,Math.min(b,v));}private String nonEmpty(String s,String d){s=s==null?"":s.trim();return s.isEmpty()?d:s;}
+    private String fmt0(double v){return String.format(Locale.GERMANY,"%.0f",v);}private String fmt1(double v){return String.format(Locale.GERMANY,"%.1f",v);}private String fmt2(double v){return String.format(Locale.GERMANY,"%.2f",v);}private String fmt3(double v){return String.format(Locale.GERMANY,"%.3f",v);}private String fmtNoGroup(double v){return String.format(Locale.US,"%.3f",v).replaceAll("0+$","").replaceAll("\\.$","");}
+    private TextView txt(String s,int sp,int color,boolean bold){TextView v=new TextView(this);v.setText(s);v.setTextSize(sp);v.setTextColor(color);if(bold)v.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);v.setGravity(Gravity.CENTER_VERTICAL);return v;}
+    private TextView label(String s){TextView v=txt(s,12,MUTED,true);v.setPadding(0,dp(8),0,dp(3));return v;}
+    private EditText input(String s,String hint){EditText e=new EditText(this);e.setText(s);e.setHint(hint);e.setHintTextColor(MUTED);e.setTextColor(TEXT);e.setSingleLine(false);e.setPadding(dp(8),dp(10),dp(8),dp(10));return e;}
+    private Button primary(String s){Button b=new Button(this);b.setText(s);b.setTextColor(Color.WHITE);b.setTextSize(16);b.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);b.setBackground(round(BLUE,BLUE,22));b.setMinHeight(dp(66));return b;}private Button secondary(String s){Button b=new Button(this);b.setText(s);b.setTextColor(CYAN);b.setBackground(round(PANEL,BLUE,16));b.setMinHeight(dp(54));return b;}private Button mini(String s){Button b=new Button(this);b.setText(s);b.setTextSize(10);b.setTextColor(TEXT);b.setBackground(round(Color.rgb(13,32,45),LINE,12));return b;}
+    private ProgressBar progress(){ProgressBar p=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);p.setMax(100);p.setProgressTintList(android.content.res.ColorStateList.valueOf(BLUE));p.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(21,35,44)));return p;}
+    private GradientDrawable round(int fill,int stroke,int radius){GradientDrawable g=new GradientDrawable();g.setColor(fill);g.setCornerRadius(dp(radius));g.setStroke(dp(1),stroke);return g;}
+    private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}private void toast(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
 }
