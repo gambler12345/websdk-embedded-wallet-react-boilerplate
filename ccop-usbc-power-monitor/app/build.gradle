@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.ccop.lademonitor.designv8'
+        applicationId 'com.ccop.lademonitor.livev9'
         minSdk 23
         targetSdk 35
-        versionCode 8
-        versionName '8.0.0-design'
+        versionCode 9
+        versionName '9.0.0-live-inventory'
     }
 
     buildTypes {
