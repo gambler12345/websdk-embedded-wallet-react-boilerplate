@@ -1,485 +1,67 @@
 package com.ccop.usbcpowermonitor;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.app.Service;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.SharedPreferences;
-import android.os.BatteryManager;
-import android.os.Build;
-import android.os.Handler;
-import android.os.IBinder;
-import android.os.Looper;
-import android.os.SystemClock;
-
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import android.app.*;
+import android.content.*;
+import android.os.*;
+import java.io.*;
+import java.util.*;
+import org.json.JSONObject;
 
 public class TelemetryService extends Service {
-    public static final String ACTION_TELEMETRY = "com.ccop.usbcpowermonitor.energyv6.TELEMETRY";
-    public static final String ACTION_STOP = "com.ccop.usbcpowermonitor.energyv6.STOP";
-    private static final String CHANNEL_ID = "ccop_lademonitor_v6";
-    private static final int NOTIFY_ID = 6001;
+    public static final String ACTION_TELEMETRY="com.ccop.lademonitor.livev9.TELEMETRY";
+    public static final String ACTION_STOP="com.ccop.lademonitor.livev9.STOP";
+    private static final String CHANNEL_ID="ccop_lademonitor_v9_live"; private static final int NOTIFY_ID=9001;
+    private final Handler handler=new Handler(Looper.getMainLooper());
+    private BatteryManager bm; private ProfileStore profiles; private SharedPreferences totals;
+    private PowerSnapshot cached=new PowerSnapshot(); private long lastScan=0,lastTick=0,lastHistory=0; private boolean lastCharging=false,lastPlugged=false;
+    private double cycleNetWh=0,totalNetWh=0,cycleSourceWh=0,totalSourceWh=0; private int cycleId=0;
+    private final Runnable ticker=new Runnable(){public void run(){try{sample();}catch(Throwable ignored){}handler.postDelayed(this,1000);}};
 
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private BatteryManager batteryManager;
-    private ProfileStore profileStore;
-    private SharedPreferences totals;
-    private PowerSnapshot cached = new PowerSnapshot();
-    private long lastSystemScan = 0L;
-    private long lastTickElapsed = 0L;
-    private long lastHistoryWrite = 0L;
-    private boolean lastCharging = false;
-    private boolean lastPlugged = false;
-    private double cycleNetWh = 0.0;
-    private double cycleSourceWh = 0.0;
-    private double totalNetWh = 0.0;
-    private double totalSourceWh = 0.0;
-    private int cycleId = 0;
+    @Override public void onCreate(){super.onCreate();bm=(BatteryManager)getSystemService(BATTERY_SERVICE);profiles=new ProfileStore(this);totals=getSharedPreferences("ccop_telemetry_totals_v9",MODE_PRIVATE);totalNetWh=bits(totals.getLong("totalNetWh",Double.doubleToLongBits(0)));totalSourceWh=bits(totals.getLong("totalSourceWh",Double.doubleToLongBits(0)));cycleId=totals.getInt("cycleId",0);createChannel();startForeground(NOTIFY_ID,notification("CCOP LadeMonitor","Live-Monitor bereit"));lastTick=SystemClock.elapsedRealtime();handler.post(ticker);}
+    @Override public int onStartCommand(Intent i,int flags,int id){if(i!=null&&ACTION_STOP.equals(i.getAction())){stopSelf();return START_NOT_STICKY;}return START_STICKY;}
+    @Override public void onDestroy(){handler.removeCallbacks(ticker);saveTotals();super.onDestroy();}
+    @Override public IBinder onBind(Intent i){return null;}
 
-    private final Runnable ticker = new Runnable() {
-        @Override public void run() {
-            try { sample(); } catch (Throwable ignored) { }
-            handler.postDelayed(this, 1000L);
-        }
-    };
-
-    @Override public void onCreate() {
-        super.onCreate();
-        batteryManager = (BatteryManager) getSystemService(Context.BATTERY_SERVICE);
-        profileStore = new ProfileStore(this);
-        totals = getSharedPreferences("ccop_telemetry_totals_v6", MODE_PRIVATE);
-        totalNetWh = bitsToDouble(totals.getLong("totalNetWh", Double.doubleToLongBits(0.0)));
-        totalSourceWh = bitsToDouble(totals.getLong("totalSourceWh", Double.doubleToLongBits(0.0)));
-        cycleId = totals.getInt("cycleId", 0);
-        createChannel();
-        startForeground(NOTIFY_ID, buildNotification("Monitor gestartet", "Warte auf Messdaten"));
-        lastTickElapsed = SystemClock.elapsedRealtime();
-        handler.post(ticker);
+    private void sample(){
+        Intent b=registerReceiver(null,new IntentFilter(Intent.ACTION_BATTERY_CHANGED)); if(b==null)return;
+        long wall=System.currentTimeMillis(),elapsed=SystemClock.elapsedRealtime(); double dt=Math.max(0,Math.min(5,(elapsed-lastTick)/1000.0))/3600.0; lastTick=elapsed;
+        int level=b.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=b.getIntExtra(BatteryManager.EXTRA_SCALE,100),status=b.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN),plug=b.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);
+        boolean plugged=plug!=0; boolean charging=plugged&&(status==BatteryManager.BATTERY_STATUS_CHARGING||status==BatteryManager.BATTERY_STATUS_FULL);
+        double phonePct=level>=0&&scale>0?100.0*level/scale:Double.NaN; int mv=b.getIntExtra(BatteryManager.EXTRA_VOLTAGE,-1);double battV=mv>0?mv/1000.0:Double.NaN;
+        long nowUa=prop(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW),avgUa=prop(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE),counter=prop(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);boolean currentOk=valid(nowUa);double battA=currentOk?nowUa/1e6:Double.NaN,battMa=currentOk?nowUa/1000.0:Double.NaN,battW=!Double.isNaN(battV)&&currentOk?Math.abs(battV*battA):Double.NaN;
+        int temp10=b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,Integer.MIN_VALUE),maxARaw=b.getIntExtra("max_charging_current",-1),maxVRaw=b.getIntExtra("max_charging_voltage",-1);
+        String event=""; if(plugged&&!lastPlugged){cycleId++;cycleNetWh=0;cycleSourceWh=0;event="CONNECTED";}else if(!plugged&&lastPlugged)event="DISCONNECTED";else if(charging!=lastCharging)event=charging?"CHARGING_START":"CHARGING_STOP";
+        if(wall-lastScan>=5000||lastScan==0){cached=scan();lastScan=wall;}
+        Reading sv=find(cached,Metric.VOLTAGE),sa=find(cached,Metric.CURRENT),sp=find(cached,Metric.POWER);Double exactW=sp!=null?Math.abs(sp.value):(sv!=null&&sa!=null?Math.abs(sv.value*sa.value):null);Double directSoc=findSourceSoc(cached);String sourceType=cached.bestExternal!=null?first(cached.bestExternal.get("usb_type"),cached.bestExternal.get("real_type"),cached.bestExternal.get("type")):null;
+        ProfileStore.Profile active=profiles.getActive(); if(active!=null&&plugged){active.lastSeenAt=wall;profiles.saveProfile(active);} double efficiency=active!=null?clamp(active.efficiency,.5,1):.88;Double estimatedW=charging&&!Double.isNaN(battW)?Math.abs(battW)/efficiency:null;Double effectiveW=exactW!=null?exactW:estimatedW;boolean estimated=exactW==null&&effectiveW!=null;
+        if(charging&&dt>0&&!Double.isNaN(battW)){double d=Math.abs(battW)*dt;cycleNetWh+=d;totalNetWh+=d;}
+        if(charging&&dt>0&&effectiveW!=null){double d=Math.abs(effectiveW)*dt;cycleSourceWh+=d;totalSourceWh+=d;if(active!=null&&active.isEnergyStore()){active.cumulativeSourceWh+=d;if(directSoc!=null){active.estimatedSoc=clamp(directSoc,0,100);active.socKnown=true;active.socOrigin="DIRECT";active.lastValidatedSoc=active.estimatedSoc;active.lastValidationAt=wall;}else if(active.socKnown&&!active.passthrough&&active.capacityWh()>0){active.estimatedSoc=clamp(active.estimatedSoc-d/active.capacityWh()*100,0,100);if(!"MANUAL".equals(active.socOrigin))active.socOrigin="ESTIMATED";}profiles.saveProfile(active);}}
+        else if(active!=null&&plugged&&active.isEnergyStore()&&directSoc!=null){active.estimatedSoc=clamp(directSoc,0,100);active.socKnown=true;active.socOrigin="DIRECT";active.lastValidatedSoc=active.estimatedSoc;active.lastValidationAt=wall;profiles.saveProfile(active);}
+        Aggregate agg=aggregate(phonePct);double activeSoc=active!=null&&active.isEnergyStore()&&active.socKnown?active.estimatedSoc:Double.NaN;
+        long histInterval=plugged?5000:15000; if(!event.isEmpty()||wall-lastHistory>=histInterval){HistoryStore.Point p=new HistoryStore.Point();p.ts=wall;p.charging=charging;p.plugged=plugged;p.phonePct=phonePct;p.batteryV=battV;p.batteryMa=battMa;p.batteryW=!Double.isNaN(battW)?battW:Double.NaN;p.sourceV=sv!=null?sv.value:Double.NaN;p.sourceA=sa!=null?sa.value:Double.NaN;p.sourceW=effectiveW!=null?effectiveW:Double.NaN;p.sourceSoc=activeSoc;p.aggregateSoc=agg.soc;p.cycleWh=cycleNetWh;p.cycleId=cycleId;p.profileId=active!=null?active.id:"";p.profileName=active!=null?active.name:"";p.event=event;p.profileSocs=profileSocsJson();HistoryStore.append(this,p);lastHistory=wall;}
+        saveTotals();broadcast(wall,charging,plugged,plug,phonePct,battV,battA,battMa,battW,avgUa,counter,temp10,maxVRaw,maxARaw,sv,sa,exactW,effectiveW,estimated,directSoc,sourceType,active,activeSoc,agg);notifyState(charging,plugged,phonePct,battMa,battW,active,agg.soc);lastCharging=charging;lastPlugged=plugged;
     }
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-        return START_STICKY;
-    }
+    private String profileSocsJson(){JSONObject o=new JSONObject();try{for(ProfileStore.Profile p:profiles.loadActiveInventory())if(p.isEnergyStore()&&p.socKnown&&!Double.isNaN(p.estimatedSoc))o.put(p.id,p.estimatedSoc);}catch(Exception ignored){}return o.toString();}
+    private Aggregate aggregate(double phonePct){Aggregate a=new Aggregate();double phoneWh=profiles.getPhoneCapacityMah()/1000.0*profiles.getPhoneNominalV();if(phoneWh>0&&!Double.isNaN(phonePct)){a.fullWh+=phoneWh;a.remainingWh+=phoneWh*clamp(phonePct,0,100)/100.0;a.knownCount++;}for(ProfileStore.Profile p:profiles.loadActiveInventory()){if(!p.isEnergyStore())continue;double wh=p.capacityWh();if(wh<=0||!p.socKnown||Double.isNaN(p.estimatedSoc)){a.unknownCount++;continue;}a.fullWh+=wh;a.remainingWh+=wh*clamp(p.estimatedSoc,0,100)/100.0;a.knownCount++;}a.soc=a.fullWh>0?clamp(a.remainingWh/a.fullWh*100,0,100):Double.NaN;return a;}
+    private void broadcast(long ts,boolean charging,boolean plugged,int plug,double phonePct,double battV,double battA,double battMa,double battW,long avgUa,long counter,int temp10,int maxVRaw,int maxARaw,Reading sv,Reading sa,Double exactW,Double effectiveW,boolean estimated,Double directSoc,String sourceType,ProfileStore.Profile active,double activeSoc,Aggregate agg){Intent i=new Intent(ACTION_TELEMETRY);i.setPackage(getPackageName());i.putExtra("ts",ts);i.putExtra("charging",charging);i.putExtra("plugged",plugged);i.putExtra("plugType",plugName(plug));put(i,"phonePct",phonePct);put(i,"batteryV",battV);put(i,"batteryA",battA);put(i,"batteryMa",battMa);put(i,"batteryW",battW);if(valid(avgUa))i.putExtra("batteryAvgMa",avgUa/1000.0);if(valid(counter))i.putExtra("chargeCounterMah",counter/1000.0);if(temp10!=Integer.MIN_VALUE)i.putExtra("temperatureC",temp10/10.0);if(maxVRaw>0)i.putExtra("profileMaxV",normV(maxVRaw));if(maxARaw>0)i.putExtra("profileMaxA",normA(maxARaw));if(sv!=null){i.putExtra("sourceV",sv.value);i.putExtra("sourceVPath",sv.path);}if(sa!=null){i.putExtra("sourceA",sa.value);i.putExtra("sourceAPath",sa.path);}if(exactW!=null)i.putExtra("sourceExactW",exactW);if(effectiveW!=null)i.putExtra("sourceEffectiveW",effectiveW);i.putExtra("sourcePowerEstimated",estimated);if(directSoc!=null)i.putExtra("sourceDirectSoc",directSoc);if(sourceType!=null)i.putExtra("sourceType",sourceType);if(active!=null){i.putExtra("profileId",active.id);i.putExtra("profileName",active.name);i.putExtra("profileType",active.type);i.putExtra("profilePassthrough",active.passthrough);i.putExtra("profileCapacityWh",active.capacityWh());}put(i,"sourceSoc",activeSoc);put(i,"aggregateSoc",agg.soc);i.putExtra("aggregateRemainingWh",agg.remainingWh);i.putExtra("aggregateFullWh",agg.fullWh);i.putExtra("aggregateKnownCount",agg.knownCount);i.putExtra("aggregateUnknownCount",agg.unknownCount);i.putExtra("cycleNetWh",cycleNetWh);i.putExtra("cycleSourceWh",cycleSourceWh);i.putExtra("totalNetWh",totalNetWh);i.putExtra("totalSourceWh",totalSourceWh);i.putExtra("cycleId",cycleId);i.putExtra("historyCount",HistoryStore.count(this));sendBroadcast(i);}
 
-    @Override public void onDestroy() {
-        handler.removeCallbacks(ticker);
-        saveTotals();
-        super.onDestroy();
-    }
+    private void notifyState(boolean charging,boolean plugged,double phonePct,double ma,double w,ProfileStore.Profile active,double agg){String title=charging?"CCOP LadeMonitor · Laden aktiv":(plugged?"CCOP LadeMonitor · Quelle verbunden":"CCOP LadeMonitor · Kein Ladegerät");String body=(!Double.isNaN(ma)?String.format(Locale.GERMANY,"%.0f mA",Math.abs(ma)):"— mA")+" · "+(!Double.isNaN(w)?String.format(Locale.GERMANY,"%.2f W",Math.abs(w)):"— W")+" · Handy "+(!Double.isNaN(phonePct)?String.format(Locale.GERMANY,"%.0f%%",phonePct):"—")+(active!=null?" · "+active.name:"");((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(NOTIFY_ID,notification(title,body));}
+    private Notification notification(String title,String body){Intent open=new Intent(this,MainActivity.class);int f=PendingIntent.FLAG_UPDATE_CURRENT|(Build.VERSION.SDK_INT>=23?PendingIntent.FLAG_IMMUTABLE:0);PendingIntent pi=PendingIntent.getActivity(this,0,open,f);Intent stop=new Intent(this,TelemetryService.class).setAction(ACTION_STOP);PendingIntent ps=PendingIntent.getService(this,1,stop,f);Notification.Builder b=Build.VERSION.SDK_INT>=26?new Notification.Builder(this,CHANNEL_ID):new Notification.Builder(this);b.setContentTitle(title).setContentText(body).setSmallIcon(android.R.drawable.ic_lock_idle_charging).setOngoing(true).setContentIntent(pi).addAction(new Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,"Stop",ps).build());return b.build();}
+    private void createChannel(){if(Build.VERSION.SDK_INT>=26){NotificationChannel c=new NotificationChannel(CHANNEL_ID,"CCOP LadeMonitor Live",NotificationManager.IMPORTANCE_LOW);c.setDescription("Lokales Live-Energie-Monitoring ohne Demo-Daten");((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);}}
+    private void saveTotals(){totals.edit().putLong("totalNetWh",Double.doubleToLongBits(totalNetWh)).putLong("totalSourceWh",Double.doubleToLongBits(totalSourceWh)).putLong("cycleNetWh",Double.doubleToLongBits(cycleNetWh)).putLong("cycleSourceWh",Double.doubleToLongBits(cycleSourceWh)).putInt("cycleId",cycleId).apply();}
+    private double bits(long b){return Double.longBitsToDouble(b);}private long prop(int id){try{return bm.getIntProperty(id);}catch(Throwable t){return Long.MIN_VALUE;}}private boolean valid(long v){return v!=Long.MIN_VALUE&&v!=Integer.MIN_VALUE;}
 
-    @Override public IBinder onBind(Intent intent) { return null; }
-
-    private void sample() {
-        Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        if (battery == null) return;
-
-        long nowWall = System.currentTimeMillis();
-        long nowElapsed = SystemClock.elapsedRealtime();
-        double dtHours = Math.max(0.0, Math.min(5.0, (nowElapsed - lastTickElapsed) / 1000.0)) / 3600.0;
-        lastTickElapsed = nowElapsed;
-
-        int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-        int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-        int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
-        int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
-        int battMv = battery.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
-        int temp10 = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-        int maxCurrentRaw = battery.getIntExtra("max_charging_current", -1);
-        int maxVoltageRaw = battery.getIntExtra("max_charging_voltage", -1);
-
-        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL;
-        boolean pluggedNow = plugged != 0;
-        double phonePct = (level >= 0 && scale > 0) ? 100.0 * level / scale : Double.NaN;
-        double battV = battMv > 0 ? battMv / 1000.0 : Double.NaN;
-        long nowUa = safeProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
-        long avgUa = safeProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE);
-        long counterUah = safeProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
-        boolean hasCurrent = validProperty(nowUa);
-        double battA = hasCurrent ? nowUa / 1_000_000.0 : Double.NaN;
-        double battMa = hasCurrent ? nowUa / 1000.0 : Double.NaN;
-        double battW = (!Double.isNaN(battV) && hasCurrent) ? Math.abs(battV * battA) : Double.NaN;
-
-        if (pluggedNow && !lastPlugged) {
-            cycleId++;
-            cycleNetWh = 0.0;
-            cycleSourceWh = 0.0;
-            totals.edit().putInt("cycleId", cycleId).apply();
-        }
-
-        if (nowWall - lastSystemScan >= 5000L || lastSystemScan == 0L) {
-            cached = scanPowerSupplies();
-            lastSystemScan = nowWall;
-        }
-
-        Reading srcV = findExternalReading(cached, Metric.VOLTAGE);
-        Reading srcA = findExternalReading(cached, Metric.CURRENT);
-        Reading srcP = findExternalReading(cached, Metric.POWER);
-        Double exactSourceW = srcP != null ? Math.abs(srcP.value) : (srcV != null && srcA != null ? Math.abs(srcV.value * srcA.value) : null);
-        Double directSourceSoc = findDirectSourceSoc(cached);
-        String sourceType = cached.bestExternal != null ? first(cached.bestExternal.get("usb_type"), cached.bestExternal.get("real_type"), cached.bestExternal.get("type")) : null;
-
-        ProfileStore.Profile active = profileStore.getActive();
-        double efficiency = active != null ? clamp(active.efficiency, 0.5, 1.0) : 0.88;
-        Double estimatedSourceW = (!Double.isNaN(battW) && charging) ? Math.abs(battW) / efficiency : null;
-        Double effectiveSourceW = exactSourceW != null ? exactSourceW : estimatedSourceW;
-        boolean sourcePowerEstimated = exactSourceW == null && effectiveSourceW != null;
-
-        if (charging && dtHours > 0 && !Double.isNaN(battW)) {
-            double d = Math.abs(battW) * dtHours;
-            cycleNetWh += d;
-            totalNetWh += d;
-        }
-        if (charging && dtHours > 0 && effectiveSourceW != null) {
-            double d = Math.abs(effectiveSourceW) * dtHours;
-            cycleSourceWh += d;
-            totalSourceWh += d;
-            if (active != null && !"CHARGER".equalsIgnoreCase(active.type)) {
-                active.cumulativeSourceWh += d;
-                if (directSourceSoc != null) {
-                    active.estimatedSoc = clamp(directSourceSoc, 0, 100);
-                    active.lastValidatedSoc = active.estimatedSoc;
-                    active.lastValidationAt = nowWall;
-                } else if (!active.passthrough && active.capacityWh() > 0) {
-                    double deltaPct = d / active.capacityWh() * 100.0;
-                    active.estimatedSoc = clamp(active.estimatedSoc - deltaPct, 0, 100);
-                }
-                profileStore.saveProfile(active);
-            }
-        } else if (active != null && directSourceSoc != null && !"CHARGER".equalsIgnoreCase(active.type)) {
-            active.estimatedSoc = clamp(directSourceSoc, 0, 100);
-            active.lastValidatedSoc = active.estimatedSoc;
-            active.lastValidationAt = nowWall;
-            profileStore.saveProfile(active);
-        }
-
-        double aggregateSoc = aggregateSoc(phonePct);
-        double activeSourceSoc = active != null && !"CHARGER".equalsIgnoreCase(active.type) ? active.estimatedSoc : Double.NaN;
-
-        boolean stateChanged = charging != lastCharging || pluggedNow != lastPlugged;
-        long interval = charging ? 5000L : 60000L;
-        if (stateChanged || nowWall - lastHistoryWrite >= interval) {
-            HistoryStore.Point point = new HistoryStore.Point();
-            point.ts = nowWall;
-            point.charging = charging;
-            point.phonePct = phonePct;
-            point.batteryV = battV;
-            point.batteryMa = battMa;
-            point.batteryW = charging && !Double.isNaN(battW) ? battW : 0.0;
-            point.sourceV = srcV != null ? srcV.value : Double.NaN;
-            point.sourceA = srcA != null ? srcA.value : Double.NaN;
-            point.sourceW = charging && effectiveSourceW != null ? effectiveSourceW : 0.0;
-            point.sourceSoc = activeSourceSoc;
-            point.aggregateSoc = aggregateSoc;
-            point.cycleWh = cycleNetWh;
-            point.profileId = active != null ? active.id : "";
-            point.profileName = active != null ? active.name : "";
-            HistoryStore.append(this, point);
-            lastHistoryWrite = nowWall;
-        }
-
-        saveTotals();
-        broadcast(nowWall, charging, pluggedNow, plugged, phonePct, battV, battA, battMa, battW, avgUa, counterUah,
-                temp10, maxVoltageRaw, maxCurrentRaw, srcV, srcA, exactSourceW, effectiveSourceW, sourcePowerEstimated,
-                directSourceSoc, sourceType, active, activeSourceSoc, aggregateSoc);
-        updateNotification(charging, phonePct, battMa, battW, active, aggregateSoc);
-
-        lastCharging = charging;
-        lastPlugged = pluggedNow;
-    }
-
-    private void broadcast(long ts, boolean charging, boolean pluggedNow, int plugged, double phonePct, double battV,
-                           double battA, double battMa, double battW, long avgUa, long counterUah, int temp10,
-                           int maxVRaw, int maxARaw, Reading srcV, Reading srcA, Double exactSourceW, Double effectiveSourceW,
-                           boolean sourcePowerEstimated, Double directSourceSoc, String sourceType, ProfileStore.Profile active,
-                           double activeSourceSoc, double aggregateSoc) {
-        Intent i = new Intent(ACTION_TELEMETRY);
-        i.setPackage(getPackageName());
-        i.putExtra("ts", ts);
-        i.putExtra("charging", charging);
-        i.putExtra("plugged", pluggedNow);
-        i.putExtra("plugType", plugName(plugged));
-        putFinite(i, "phonePct", phonePct);
-        putFinite(i, "batteryV", battV);
-        putFinite(i, "batteryA", battA);
-        putFinite(i, "batteryMa", battMa);
-        putFinite(i, "batteryW", battW);
-        if (validProperty(avgUa)) i.putExtra("batteryAvgMa", avgUa / 1000.0);
-        if (validProperty(counterUah)) i.putExtra("chargeCounterMah", counterUah / 1000.0);
-        if (temp10 != Integer.MIN_VALUE) i.putExtra("temperatureC", temp10 / 10.0);
-        if (maxVRaw > 0) i.putExtra("profileMaxV", normalizeVoltage(maxVRaw));
-        if (maxARaw > 0) i.putExtra("profileMaxA", normalizeCurrent(maxARaw));
-        if (srcV != null) { i.putExtra("sourceV", srcV.value); i.putExtra("sourceVPath", srcV.path); }
-        if (srcA != null) { i.putExtra("sourceA", srcA.value); i.putExtra("sourceAPath", srcA.path); }
-        if (exactSourceW != null) i.putExtra("sourceExactW", exactSourceW);
-        if (effectiveSourceW != null) i.putExtra("sourceEffectiveW", effectiveSourceW);
-        i.putExtra("sourcePowerEstimated", sourcePowerEstimated);
-        if (directSourceSoc != null) i.putExtra("sourceDirectSoc", directSourceSoc);
-        if (sourceType != null) i.putExtra("sourceType", sourceType);
-        if (active != null) {
-            i.putExtra("profileId", active.id);
-            i.putExtra("profileName", active.name);
-            i.putExtra("profileType", active.type);
-            i.putExtra("profilePassthrough", active.passthrough);
-            i.putExtra("profileCapacityWh", active.capacityWh());
-        }
-        putFinite(i, "sourceSoc", activeSourceSoc);
-        putFinite(i, "aggregateSoc", aggregateSoc);
-        i.putExtra("cycleNetWh", cycleNetWh);
-        i.putExtra("cycleSourceWh", cycleSourceWh);
-        i.putExtra("totalNetWh", totalNetWh);
-        i.putExtra("totalSourceWh", totalSourceWh);
-        i.putExtra("cycleId", cycleId);
-        i.putExtra("historyCount", HistoryStore.count(this));
-        sendBroadcast(i);
-    }
-
-    private double aggregateSoc(double phonePct) {
-        double fullWh = 0.0;
-        double remainingWh = 0.0;
-        double phoneWh = profileStore.getPhoneCapacityMah() / 1000.0 * profileStore.getPhoneNominalV();
-        if (phoneWh > 0 && !Double.isNaN(phonePct)) {
-            fullWh += phoneWh;
-            remainingWh += phoneWh * clamp(phonePct, 0, 100) / 100.0;
-        }
-        for (ProfileStore.Profile p : profileStore.load()) {
-            if ("CHARGER".equalsIgnoreCase(p.type)) continue;
-            double wh = p.capacityWh();
-            if (wh <= 0) continue;
-            fullWh += wh;
-            remainingWh += wh * clamp(p.estimatedSoc, 0, 100) / 100.0;
-        }
-        return fullWh > 0 ? clamp(remainingWh / fullWh * 100.0, 0, 100) : Double.NaN;
-    }
-
-    private void updateNotification(boolean charging, double phonePct, double battMa, double battW,
-                                    ProfileStore.Profile active, double aggregateSoc) {
-        String title = charging ? "CCOP LadeMonitor · Laden aktiv" : "CCOP LadeMonitor · Monitoring";
-        String speed = !Double.isNaN(battMa) ? String.format(Locale.GERMANY, "%.0f mA", Math.abs(battMa)) : "— mA";
-        String watts = !Double.isNaN(battW) ? String.format(Locale.GERMANY, "%.2f W", Math.abs(battW)) : "— W";
-        String pct = !Double.isNaN(phonePct) ? String.format(Locale.GERMANY, "%.0f%%", phonePct) : "—%";
-        String src = active != null ? active.name : "keine Quelle";
-        String agg = !Double.isNaN(aggregateSoc) ? String.format(Locale.GERMANY, " · Gesamt %.0f%%", aggregateSoc) : "";
-        Notification n = buildNotification(title, speed + " · " + watts + " · Handy " + pct + agg + " · " + src);
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.notify(NOTIFY_ID, n);
-    }
-
-    private Notification buildNotification(String title, String body) {
-        Intent open = new Intent(this, MainActivity.class);
-        int f = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, open, f);
-        Intent stop = new Intent(this, TelemetryService.class).setAction(ACTION_STOP);
-        PendingIntent psi = PendingIntent.getService(this, 1, stop, f);
-        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
-        b.setContentTitle(title)
-                .setContentText(body)
-                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
-                .setOngoing(true)
-                .setContentIntent(pi)
-                .addAction(new Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Stop", psi).build());
-        if (Build.VERSION.SDK_INT >= 21) b.setCategory(Notification.CATEGORY_SERVICE);
-        return b.build();
-    }
-
-    private void createChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel c = new NotificationChannel(CHANNEL_ID, "CCOP LadeMonitor", NotificationManager.IMPORTANCE_LOW);
-            c.setDescription("Lokales Lade- und Energie-Monitoring");
-            ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE)).createNotificationChannel(c);
-        }
-    }
-
-    private void saveTotals() {
-        totals.edit()
-                .putLong("totalNetWh", Double.doubleToLongBits(totalNetWh))
-                .putLong("totalSourceWh", Double.doubleToLongBits(totalSourceWh))
-                .putLong("cycleNetWh", Double.doubleToLongBits(cycleNetWh))
-                .putLong("cycleSourceWh", Double.doubleToLongBits(cycleSourceWh))
-                .putInt("cycleId", cycleId)
-                .apply();
-    }
-
-    private double bitsToDouble(long bits) { return Double.longBitsToDouble(bits); }
-
-    private long safeProperty(int id) {
-        try { return batteryManager.getIntProperty(id); }
-        catch (Throwable t) { return Long.MIN_VALUE; }
-    }
-
-    private boolean validProperty(long v) { return v != Long.MIN_VALUE && v != Integer.MIN_VALUE; }
-
-    private PowerSnapshot scanPowerSupplies() {
-        PowerSnapshot snap = new PowerSnapshot();
-        File root = new File("/sys/class/power_supply");
-        try {
-            File[] dirs = root.listFiles();
-            if (dirs != null) {
-                for (File d : dirs) {
-                    if (!d.isDirectory()) continue;
-                    Supply s = readSupply(d);
-                    if (s != null) snap.supplies.add(s);
-                }
-            }
-        } catch (Throwable ignored) { }
-        int best = Integer.MIN_VALUE;
-        for (Supply s : snap.supplies) {
-            int score = externalScore(s);
-            if (score > best) {
-                best = score;
-                snap.bestExternal = score > 0 ? s : null;
-            }
-        }
-        return snap;
-    }
-
-    private Supply readSupply(File d) {
-        try {
-            Supply s = new Supply(d.getName());
-            String[] keys = new String[]{
-                    "type","usb_type","real_type","online","present","status","capacity","capacity_raw",
-                    "voltage_now","voltage_avg","vbus_voltage","vbus_voltage_now","voltage_vbus","usb_voltage","input_voltage","charger_voltage","pd_voltage","pd_voltage_now",
-                    "current_now","current_avg","ibus_current","ibus_current_now","current_ibus","usb_current","input_current","charger_current","pd_current","pd_current_now",
-                    "power_now","power_avg","pd_active","pd_state","model_name","manufacturer"
-            };
-            for (String k : keys) {
-                String v = readText(new File(d, k));
-                if (v != null) s.values.put(k, v);
-            }
-            return s.values.isEmpty() ? null : s;
-        } catch (Throwable t) { return null; }
-    }
-
-    private int externalScore(Supply s) {
-        String n = s.name.toLowerCase(Locale.ROOT);
-        String type = lower(s.get("type"));
-        if (n.contains("battery") || n.contains("bms") || type.contains("battery")) return -1000;
-        int score = 1;
-        if ("1".equals(s.get("online"))) score += 120;
-        if ("1".equals(s.get("present"))) score += 15;
-        if (n.contains("usb") || n.contains("charger") || n.contains("chg") || n.contains("main") || n.contains("ac") || n.contains("pd") || n.contains("typec")) score += 45;
-        if (type.contains("usb") || type.contains("mains") || type.contains("pd")) score += 45;
-        return score;
-    }
-
-    private Reading findExternalReading(PowerSnapshot snap, Metric metric) {
-        String[] keys = metric == Metric.VOLTAGE ? voltageKeys() : (metric == Metric.CURRENT ? currentKeys() : powerKeys());
-        Reading best = null;
-        int bestScore = Integer.MIN_VALUE;
-        for (Supply s : snap.supplies) {
-            int ss = externalScore(s);
-            if (ss <= 0) continue;
-            if ("0".equals(s.get("online")) && "0".equals(s.get("present"))) continue;
-            for (int i = 0; i < keys.length; i++) {
-                String k = keys[i];
-                Double raw = parseDouble(s.get(k));
-                if (raw == null || raw == 0.0) continue;
-                double v = metric == Metric.VOLTAGE ? normalizeVoltage(raw) : (metric == Metric.CURRENT ? normalizeCurrent(raw) : normalizePower(raw));
-                if (!sane(metric, v)) continue;
-                int score = ss + (keys.length - i) * 3;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = new Reading(v, "/sys/class/power_supply/" + s.name + "/" + k);
-                }
-            }
-        }
-        return best;
-    }
-
-    private Double findDirectSourceSoc(PowerSnapshot snap) {
-        Supply s = snap.bestExternal;
-        if (s == null) return null;
-        Double c = parseDouble(first(s.get("capacity"), s.get("capacity_raw")));
-        if (c == null) return null;
-        if (c >= 0 && c <= 100) return c;
-        if (c > 100 && c <= 10000) return c / 100.0;
-        return null;
-    }
-
-    private String[] voltageKeys() { return new String[]{"vbus_voltage_now","vbus_voltage","voltage_vbus","usb_voltage","input_voltage","charger_voltage","pd_voltage_now","pd_voltage","voltage_now","voltage_avg"}; }
-    private String[] currentKeys() { return new String[]{"ibus_current_now","ibus_current","current_ibus","usb_current","input_current","charger_current","pd_current_now","pd_current","current_now","current_avg"}; }
-    private String[] powerKeys() { return new String[]{"power_now","power_avg"}; }
-
-    private boolean sane(Metric m, double v) {
-        double a = Math.abs(v);
-        if (m == Metric.VOLTAGE) return a >= 1 && a <= 30;
-        if (m == Metric.CURRENT) return a >= 0.0005 && a <= 15;
-        return a >= 0.001 && a <= 400;
-    }
-
-    private String readText(File f) {
-        try {
-            if (!f.exists() || !f.isFile() || !f.canRead()) return null;
-            BufferedReader r = new BufferedReader(new FileReader(f));
-            String line = r.readLine();
-            r.close();
-            return line == null ? null : line.trim();
-        } catch (Throwable t) { return null; }
-    }
-
-    private Double parseDouble(String s) {
-        if (s == null) return null;
-        try { return Double.parseDouble(s.trim()); }
-        catch (Throwable t) { return null; }
-    }
-
-    private double normalizeVoltage(double raw) {
-        double a = Math.abs(raw);
-        if (a > 100000) return raw / 1_000_000.0;
-        if (a > 100) return raw / 1000.0;
-        return raw;
-    }
-
-    private double normalizeCurrent(double raw) {
-        double a = Math.abs(raw);
-        if (a > 100000) return raw / 1_000_000.0;
-        if (a > 100) return raw / 1000.0;
-        return raw;
-    }
-
-    private double normalizePower(double raw) {
-        double a = Math.abs(raw);
-        if (a > 100000) return raw / 1_000_000.0;
-        if (a > 1000) return raw / 1000.0;
-        return raw;
-    }
-
-    private String plugName(int p) {
-        if ((p & BatteryManager.BATTERY_PLUGGED_AC) != 0) return "Netzteil / AC";
-        if ((p & BatteryManager.BATTERY_PLUGGED_USB) != 0) return "USB";
-        if ((p & BatteryManager.BATTERY_PLUGGED_WIRELESS) != 0) return "Wireless";
-        return p == 0 ? "keine" : "extern";
-    }
-
-    private static void putFinite(Intent i, String key, double v) {
-        if (!Double.isNaN(v) && !Double.isInfinite(v)) i.putExtra(key, v);
-    }
-
-    private String first(String... vals) {
-        if (vals == null) return null;
-        for (String s : vals) if (s != null && !s.trim().isEmpty()) return s.trim();
-        return null;
-    }
-
-    private String lower(String s) { return s == null ? "" : s.toLowerCase(Locale.ROOT); }
-    private double clamp(double v, double min, double max) { return Math.max(min, Math.min(max, v)); }
-
-    private enum Metric { VOLTAGE, CURRENT, POWER }
-    private static class Reading { final double value; final String path; Reading(double v, String p) { value = v; path = p; } }
-    private static class Supply { final String name; final Map<String,String> values = new LinkedHashMap<>(); Supply(String n){name=n;} String get(String k){return values.get(k);} }
-    private static class PowerSnapshot { final List<Supply> supplies = new ArrayList<>(); Supply bestExternal; }
+    private PowerSnapshot scan(){PowerSnapshot s=new PowerSnapshot();File root=new File("/sys/class/power_supply");try{File[] ds=root.listFiles();if(ds!=null)for(File d:ds)if(d.isDirectory()){Supply x=readSupply(d);if(x!=null)s.supplies.add(x);}}catch(Throwable ignored){}int best=Integer.MIN_VALUE;for(Supply x:s.supplies){int score=externalScore(x);if(score>best){best=score;s.bestExternal=score>0?x:null;}}return s;}
+    private Supply readSupply(File d){try{Supply s=new Supply(d.getName());String[] keys={"type","usb_type","real_type","online","present","status","capacity","capacity_raw","voltage_now","voltage_avg","vbus_voltage","vbus_voltage_now","voltage_vbus","usb_voltage","input_voltage","charger_voltage","pd_voltage","pd_voltage_now","current_now","current_avg","ibus_current","ibus_current_now","current_ibus","usb_current","input_current","charger_current","pd_current","pd_current_now","power_now","power_avg","pd_active","pd_state","model_name","manufacturer"};for(String k:keys){String v=read(new File(d,k));if(v!=null)s.values.put(k,v);}return s.values.isEmpty()?null:s;}catch(Throwable t){return null;}}
+    private int externalScore(Supply s){String n=s.name.toLowerCase(Locale.ROOT),type=lower(s.get("type"));if(n.contains("battery")||n.contains("bms")||type.contains("battery"))return-1000;int score=1;if("1".equals(s.get("online")))score+=120;if("1".equals(s.get("present")))score+=15;if(n.contains("usb")||n.contains("charger")||n.contains("chg")||n.contains("main")||n.contains("ac")||n.contains("pd")||n.contains("typec"))score+=45;if(type.contains("usb")||type.contains("mains")||type.contains("pd"))score+=45;return score;}
+    private Reading find(PowerSnapshot s,Metric m){String[] keys=m==Metric.VOLTAGE?voltageKeys():(m==Metric.CURRENT?currentKeys():powerKeys());Reading best=null;int bs=Integer.MIN_VALUE;for(Supply x:s.supplies){int ss=externalScore(x);if(ss<=0)continue;if("0".equals(x.get("online"))&&"0".equals(x.get("present")))continue;for(int j=0;j<keys.length;j++){Double raw=parse(x.get(keys[j]));if(raw==null||raw==0)continue;double v=m==Metric.VOLTAGE?normV(raw):(m==Metric.CURRENT?normA(raw):normP(raw));if(!sane(m,v))continue;int sc=ss+(keys.length-j)*3;if(sc>bs){bs=sc;best=new Reading(v,"/sys/class/power_supply/"+x.name+"/"+keys[j]);}}}return best;}
+    private Double findSourceSoc(PowerSnapshot s){Supply x=s.bestExternal;if(x==null)return null;Double c=parse(first(x.get("capacity"),x.get("capacity_raw")));if(c==null)return null;if(c>=0&&c<=100)return c;if(c>100&&c<=10000)return c/100.0;return null;}
+    private String[] voltageKeys(){return new String[]{"vbus_voltage_now","vbus_voltage","voltage_vbus","usb_voltage","input_voltage","charger_voltage","pd_voltage_now","pd_voltage","voltage_now","voltage_avg"};}private String[] currentKeys(){return new String[]{"ibus_current_now","ibus_current","current_ibus","usb_current","input_current","charger_current","pd_current_now","pd_current","current_now","current_avg"};}private String[] powerKeys(){return new String[]{"power_now","power_avg"};}
+    private boolean sane(Metric m,double v){double a=Math.abs(v);if(m==Metric.VOLTAGE)return a>=1&&a<=30;if(m==Metric.CURRENT)return a>=.0005&&a<=15;return a>=.001&&a<=400;}
+    private String read(File f){try{if(!f.exists()||!f.isFile()||!f.canRead())return null;BufferedReader r=new BufferedReader(new FileReader(f));String l=r.readLine();r.close();return l==null?null:l.trim();}catch(Throwable t){return null;}}private Double parse(String s){try{return s==null?null:Double.parseDouble(s.trim());}catch(Throwable t){return null;}}
+    private double normV(double r){double a=Math.abs(r);if(a>100000)return r/1e6;if(a>100)return r/1000.0;return r;}private double normA(double r){double a=Math.abs(r);if(a>100000)return r/1e6;if(a>100)return r/1000.0;return r;}private double normP(double r){double a=Math.abs(r);if(a>100000)return r/1e6;if(a>1000)return r/1000.0;return r;}
+    private String plugName(int p){if((p&BatteryManager.BATTERY_PLUGGED_AC)!=0)return"Netzteil / AC";if((p&BatteryManager.BATTERY_PLUGGED_USB)!=0)return"USB";if((p&BatteryManager.BATTERY_PLUGGED_WIRELESS)!=0)return"Wireless";return"keine";}
+    private static void put(Intent i,String k,double v){if(!Double.isNaN(v)&&!Double.isInfinite(v))i.putExtra(k,v);}private String first(String...x){for(String s:x)if(s!=null&&!s.trim().isEmpty())return s.trim();return null;}private String lower(String s){return s==null?"":s.toLowerCase(Locale.ROOT);}private double clamp(double v,double a,double b){return Math.max(a,Math.min(b,v));}
+    private enum Metric{VOLTAGE,CURRENT,POWER}private static class Reading{final double value;final String path;Reading(double v,String p){value=v;path=p;}}private static class Supply{final String name;final Map<String,String> values=new LinkedHashMap<>();Supply(String n){name=n;}String get(String k){return values.get(k);}}private static class PowerSnapshot{final List<Supply> supplies=new ArrayList<>();Supply bestExternal;}private static class Aggregate{double fullWh=0,remainingWh=0,soc=Double.NaN;int knownCount=0,unknownCount=0;}
 }
