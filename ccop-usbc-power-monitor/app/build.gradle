@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.ccop.lademonitor.livev10'
+        applicationId 'com.ccop.lademonitor.livev11'
         minSdk 23
         targetSdk 35
-        versionCode 10
-        versionName '10.0.0-live-auto-config'
+        versionCode 11
+        versionName '11.0.0-verified-workflow'
     }
 
     buildTypes {
@@ -29,4 +29,5 @@ android {
 
 dependencies {
     implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'androidx.core:core:1.15.0'
 }
