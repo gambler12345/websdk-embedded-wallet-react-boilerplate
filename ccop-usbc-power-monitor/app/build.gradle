@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.ccop.usbcpowermonitor.speedv5'
+        applicationId 'com.ccop.usbcpowermonitor.energyv6'
         minSdk 23
         targetSdk 35
-        versionCode 5
-        versionName '5.0.0-speed'
+        versionCode 6
+        versionName '6.0.0-energy-history'
     }
 
     buildTypes {
@@ -25,4 +25,8 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
 }
