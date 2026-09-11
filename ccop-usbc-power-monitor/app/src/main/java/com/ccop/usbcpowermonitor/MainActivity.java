@@ -4,18 +4,24 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.BatteryManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -23,9 +29,9 @@ import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,49 +39,74 @@ import java.util.Locale;
 import java.util.Map;
 
 public class MainActivity extends Activity {
-    private static final int BG = Color.rgb(9, 13, 17);
-    private static final int PANEL = Color.rgb(17, 23, 29);
-    private static final int PANEL2 = Color.rgb(13, 19, 25);
-    private static final int LINE = Color.rgb(41, 53, 64);
-    private static final int TEXT = Color.rgb(246, 248, 251);
-    private static final int MUTED = Color.rgb(152, 165, 179);
-    private static final int OK = Color.rgb(70, 229, 138);
-    private static final int WARN = Color.rgb(255, 209, 102);
-    private static final int BLUE = Color.rgb(125, 170, 255);
 
-    // These ACTION_BATTERY_CHANGED extras exist on many Android/OEM builds but are not
-    // public BatteryManager constants, so use their literal keys and fall back to sysfs.
-    private static final String EXTRA_MAX_CHARGING_CURRENT = "max_charging_current";
-    private static final String EXTRA_MAX_CHARGING_VOLTAGE = "max_charging_voltage";
+    private static final int BG = Color.rgb(8, 12, 16);
+    private static final int PANEL = Color.rgb(17, 23, 29);
+    private static final int PANEL2 = Color.rgb(12, 18, 24);
+    private static final int LINE = Color.rgb(43, 56, 68);
+    private static final int TEXT = Color.rgb(247, 249, 252);
+    private static final int MUTED = Color.rgb(151, 164, 178);
+    private static final int OK = Color.rgb(72, 229, 139);
+    private static final int WARN = Color.rgb(255, 210, 105);
+    private static final int BLUE = Color.rgb(117, 164, 255);
+    private static final int RED = Color.rgb(255, 114, 114);
+
+    private enum SourceMode { AUTO, BATTERY_API, SYSTEM }
+    private enum ViewMode { LIVE, PROFILE }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<String, TextView> values = new HashMap<>();
+    private final List<Button> sourceButtons = new ArrayList<>();
+    private final List<Button> viewButtons = new ArrayList<>();
+
     private BatteryManager batteryManager;
-    private TextView statusText;
+    private SharedPreferences prefs;
+    private SourceMode sourceMode = SourceMode.AUTO;
+    private ViewMode viewMode = ViewMode.LIVE;
+
+    private TextView heroStatus;
+    private TextView heroSub;
+    private TextView sourceQuality;
+    private TextView flowText;
     private TextView diagText;
+    private FlowChartView flowChart;
+
+    private long lastTickMs = 0L;
+    private double sessionEnergyWh = 0.0;
+    private double todayEnergyWh = 0.0;
+    private String currentDayKey = "";
     private String latestDiagnostics = "Noch keine Diagnose.";
 
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
             refreshTelemetry();
-            handler.postDelayed(this, 1000L);
+            handler.postDelayed(this, 1000);
         }
     };
 
-    @Override protected void onCreate(Bundle savedInstanceState) {
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
         batteryManager = (BatteryManager) getSystemService(Context.BATTERY_SERVICE);
+        prefs = getSharedPreferences("live_energy", MODE_PRIVATE);
+        loadDayEnergy();
         setContentView(buildUi());
     }
 
-    @Override protected void onResume() {
+    @Override
+    protected void onResume() {
         super.onResume();
+        lastTickMs = SystemClock.elapsedRealtime();
         handler.removeCallbacks(ticker);
         handler.post(ticker);
     }
 
-    @Override protected void onPause() {
+    @Override
+    protected void onPause() {
         handler.removeCallbacks(ticker);
+        saveDayEnergy();
         super.onPause();
     }
 
@@ -86,87 +117,137 @@ public class MainActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(14), dp(18), dp(14), dp(34));
-        scroll.addView(root, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.setPadding(dp(14), dp(12), dp(14), dp(28));
+        scroll.addView(root, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        root.addView(text("CCOP USB-C LadeMonitor", 23, TEXT, true));
-        TextView sub = text("Native Android-Auswertung · ohne Browser · ohne Bluetooth", 13, MUTED, false);
-        sub.setPadding(0, dp(3), 0, dp(14));
-        root.addView(sub);
+        final int baseLeft = dp(14), baseTop = dp(12), baseRight = dp(14), baseBottom = dp(28);
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top = insets.getSystemWindowInsetTop();
+            int bottom = insets.getSystemWindowInsetBottom();
+            v.setPadding(baseLeft, baseTop + top, baseRight, baseBottom + bottom);
+            return insets;
+        });
 
-        LinearLayout source = card();
-        source.addView(sectionTitle("EXTERNE ENERGIEQUELLE"));
-        statusText = text("PRÜFE…", 34, TEXT, true);
-        statusText.setPadding(0, dp(9), 0, dp(6));
-        source.addView(statusText);
-        addMetric(source, "plug", "Anschluss / Quelle");
-        addMetric(source, "charging", "Aktiver Ladezyklus");
-        addMetric(source, "supply", "Android Power-Supply");
-        addMetric(source, "usbType", "USB / PD Typ");
-        root.addView(source, marginBottom());
+        TextView title = text("CCOP USB-C LadeMonitor · LIVE", 23, TEXT, true);
+        root.addView(title);
+        TextView subtitle = text("Keine Demo-Fallbacks · Werte nur aus Android-API oder lesbaren Systemknoten", 12, MUTED, false);
+        subtitle.setPadding(0, dp(3), 0, dp(12));
+        root.addView(subtitle);
 
-        LinearLayout charger = card();
-        charger.addView(sectionTitle("USB-C / LADEGERÄT · LIVE"));
-        addMetric(charger, "inputVoltage", "Eingangsspannung");
-        addMetric(charger, "inputCurrent", "Eingangsstrom");
-        addMetric(charger, "inputPower", "Eingangsleistung");
-        addMetric(charger, "maxVoltage", "Gemeldete max. Spannung");
-        addMetric(charger, "maxCurrent", "Gemeldeter max. Strom");
-        addMetric(charger, "pdActive", "USB-PD / Profil");
-        root.addView(charger, marginBottom());
+        LinearLayout hero = card();
+        hero.addView(sectionTitle("LIVE-STATUS"));
+        heroStatus = text("PRÜFE…", 35, TEXT, true);
+        heroStatus.setPadding(0, dp(8), 0, dp(2));
+        hero.addView(heroStatus);
+        heroSub = text("Messquelle wird geprüft", 13, MUTED, false);
+        heroSub.setPadding(0, 0, 0, dp(10));
+        hero.addView(heroSub);
+        addMetric(hero, "plug", "Anschluss / Quelle");
+        addMetric(hero, "charging", "Aktiver Ladezyklus");
+        addMetric(hero, "apiSource", "Aktuelle Datenquelle");
+        root.addView(hero, marginBottom());
+
+        LinearLayout selector = card();
+        selector.addView(sectionTitle("1 · MESSQUELLE AUSWÄHLEN"));
+        selector.addView(text("AUTO bevorzugt echte USB/System-Livewerte. Wenn Android diese sperrt, wird nichts erfunden.", 12, MUTED, false));
+        LinearLayout sourceRow = horizontalButtons();
+        addSourceButton(sourceRow, "AUTO LIVE", SourceMode.AUTO);
+        addSourceButton(sourceRow, "AKKU-API", SourceMode.BATTERY_API);
+        addSourceButton(sourceRow, "USB/PD SYSTEM", SourceMode.SYSTEM);
+        selector.addView(wrapHorizontal(sourceRow), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView stage2 = sectionTitle("2 · ANZEIGEART AUSWÄHLEN");
+        stage2.setPadding(0, dp(14), 0, dp(2));
+        selector.addView(stage2);
+        selector.addView(text("LIVE zeigt nur Messwerte. PROFIL/MAX zeigt gemeldete Obergrenzen getrennt davon.", 12, MUTED, false));
+        LinearLayout viewRow = horizontalButtons();
+        addViewButton(viewRow, "LIVE-MESSUNG", ViewMode.LIVE);
+        addViewButton(viewRow, "PROFIL / MAX", ViewMode.PROFILE);
+        selector.addView(wrapHorizontal(viewRow), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(selector, marginBottom());
+        refreshButtonStyles();
+
+        LinearLayout input = card();
+        input.addView(sectionTitle("AUSGEWÄHLTE ENERGIEQUELLE"));
+        sourceQuality = text("Quelle wird ausgewertet…", 12, MUTED, true);
+        sourceQuality.setPadding(0, dp(4), 0, dp(8));
+        input.addView(sourceQuality);
+        addMetric(input, "inputVoltage", "Spannung");
+        addMetric(input, "inputCurrentA", "Strom · Ampere");
+        addMetric(input, "inputCurrentMa", "Strom · Milliampere");
+        addMetric(input, "inputPower", "Leistung · Watt");
+        addMetric(input, "usbType", "USB / PD / Profil");
+        root.addView(input, marginBottom());
+
+        LinearLayout flow = card();
+        flow.addView(sectionTitle("STROMFLUSS · 1 SEKUNDE"));
+        flowText = text("Warte auf ersten Live-Wert…", 19, TEXT, true);
+        flowText.setPadding(0, dp(5), 0, dp(8));
+        flow.addView(flowText);
+        flowChart = new FlowChartView(this);
+        flow.addView(flowChart, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(132)));
+        TextView flowHint = text("Kurve = Akkuleistung aus echter Akkuspannung × gemessenem Akku-Strom. Kein Ersatzwert aus 5 V / 2 A.", 11, MUTED, false);
+        flowHint.setPadding(0, dp(7), 0, 0);
+        flow.addView(flowHint);
+        root.addView(flow, marginBottom());
 
         LinearLayout battery = card();
         battery.addView(sectionTitle("SMARTPHONE-AKKU · DIREKT"));
         addMetric(battery, "batteryPct", "Ladezustand");
         addMetric(battery, "batteryVoltage", "Akkuspannung");
-        addMetric(battery, "batteryCurrent", "Momentaner Akkustrom");
-        addMetric(battery, "batteryCurrentAvg", "Mittlerer Akkustrom");
+        addMetric(battery, "batteryCurrentA", "Momentaner Akkustrom · A");
+        addMetric(battery, "batteryCurrentMa", "Momentaner Akkustrom · mA");
+        addMetric(battery, "batteryAvg", "Mittlerer Akkustrom");
         addMetric(battery, "batteryPower", "Momentane Akkuleistung");
         addMetric(battery, "chargeCounter", "Charge Counter");
-        addMetric(battery, "energyCounter", "Energy Counter");
         addMetric(battery, "temperature", "Temperatur");
         root.addView(battery, marginBottom());
 
-        LinearLayout bank = card();
-        bank.addView(sectionTitle("EXTERNE POWERBANK"));
-        addMetric(bank, "pbSoc", "Übertragener Ladezustand");
-        addMetric(bank, "pbVoltage", "Quellspannung");
-        addMetric(bank, "pbCurrent", "Quellstrom");
-        addMetric(bank, "pbModel", "Modell / Hersteller");
-        TextView bankInfo = text(
-                "Der Ladezustand der Powerbank erscheint hier nur, wenn die Quelle ihn als digitalen Wert an Android überträgt. Spannung und Strom werden zusätzlich aus allen lesbaren Android-Power-Supply-Knoten gesucht.",
-                12, MUTED, false);
-        bankInfo.setPadding(0, dp(10), 0, 0);
-        bank.addView(bankInfo);
-        root.addView(bank, marginBottom());
+        LinearLayout profile = card();
+        profile.addView(sectionTitle("GERÄTEMELDUNG · PROFIL / MAX"));
+        TextView profileWarn = text("Diese Werte sind Fähigkeiten/Obergrenzen des Ladepfads und ausdrücklich KEINE Live-Messung.", 12, WARN, true);
+        profileWarn.setPadding(0, dp(3), 0, dp(8));
+        profile.addView(profileWarn);
+        addMetric(profile, "maxVoltage", "Gemeldete max. Spannung");
+        addMetric(profile, "maxCurrent", "Gemeldeter max. Strom");
+        addMetric(profile, "maxPower", "Rechnerische max. Leistung");
+        addMetric(profile, "pdProfile", "PD / USB-Typ");
+        root.addView(profile, marginBottom());
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button refresh = button("JETZT PRÜFEN");
+        LinearLayout totals = card();
+        totals.addView(sectionTitle("ZEIT- UND ENERGIEWERTE"));
+        addMetric(totals, "sessionEnergy", "Diese App-Sitzung");
+        addMetric(totals, "todayEnergy", "Heute · erfasste App-Messzeit");
+        addMetric(totals, "yearEnergy", "Jahreswert · 365 × Tageswert");
+        TextView totalsHint = text("Tages-/Jahreswerte zählen nur Energie, solange die App tatsächlich misst. Der Jahreswert ist eine Hochrechnung, kein Netzbetreiber-Messwert.", 11, MUTED, false);
+        totalsHint.setPadding(0, dp(8), 0, 0);
+        totals.addView(totalsHint);
+        root.addView(totals, marginBottom());
+
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button refresh = button("JETZT NEU PRÜFEN");
         refresh.setOnClickListener(v -> refreshTelemetry());
-        actions.addView(refresh, new LinearLayout.LayoutParams(0, dp(50), 1f));
+        actionRow.addView(refresh, new LinearLayout.LayoutParams(0, dp(50), 1f));
         Button share = button("DIAGNOSE TEILEN");
         share.setOnClickListener(v -> shareDiagnostics());
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, dp(50), 1f);
-        slp.setMargins(dp(8), 0, 0, 0);
-        actions.addView(share, slp);
-        root.addView(actions, marginBottom());
+        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(0, dp(50), 1f);
+        shareLp.setMargins(dp(8), 0, 0, 0);
+        actionRow.addView(share, shareLp);
+        root.addView(actionRow, marginBottom());
 
         LinearLayout diag = card();
-        diag.addView(sectionTitle("GERÄTE-DIAGNOSE · OEM / MOTOROLA"));
-        TextView diagInfo = text(
-                "Die APK liest zusätzlich /sys/class/power_supply. Dadurch werden herstellerspezifische USB-C-, Charger-, PD- und BMS-Felder sichtbar, sofern Android sie normalen Apps freigibt.",
-                12, MUTED, false);
-        diagInfo.setPadding(0, dp(5), 0, dp(10));
-        diag.addView(diagInfo);
-        diagText = text("Prüfe…", 11, TEXT, false);
+        diag.addView(sectionTitle("RAW-DIAGNOSE · API + /sys/class/power_supply"));
+        TextView diagHint = text("Hier stehen die tatsächlich gelieferten Rohdaten. Fehlt ein USB-Wert hier, gibt Android ihn dieser App nicht frei.", 11, MUTED, false);
+        diagHint.setPadding(0, dp(3), 0, dp(8));
+        diag.addView(diagHint);
+        diagText = text("Prüfe…", 10, TEXT, false);
         diagText.setTypeface(Typeface.MONOSPACE);
         diagText.setTextIsSelectable(true);
         diag.addView(diagText);
         root.addView(diag, marginBottom());
 
-        TextView footer = text("Lokal · keine Cloud · kein Bluetooth · native Android-APIs", 11, MUTED, false);
+        TextView footer = text("Local First · keine Cloud · keine Demo-Werte · Android API + OEM-Systemknoten", 10, MUTED, false);
         footer.setGravity(Gravity.CENTER);
         root.addView(footer);
         return scroll;
@@ -182,299 +263,391 @@ public class MainActivity extends Activity {
         int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
         int battMv = battery.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
         int tempTenthC = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-        int maxCurrentUa = battery.getIntExtra(EXTRA_MAX_CHARGING_CURRENT, -1);
-        int maxVoltageUv = battery.getIntExtra(EXTRA_MAX_CHARGING_VOLTAGE, -1);
 
-        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                status == BatteryManager.BATTERY_STATUS_FULL;
-        double pct = level >= 0 && scale > 0 ? (100.0 * level / scale) : Double.NaN;
+        int maxCurrentUa = battery.getIntExtra("max_charging_current", -1);
+        int maxVoltageUv = battery.getIntExtra("max_charging_voltage", -1);
+
+        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL;
+        double pct = (level >= 0 && scale > 0) ? (100.0 * level / scale) : Double.NaN;
         double batteryV = battMv > 0 ? battMv / 1000.0 : Double.NaN;
 
         long currentNowUa = safeIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
         long currentAvgUa = safeIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE);
         long chargeCounterUah = safeIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
-        long energyCounterNwh = safeLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER);
 
-        PowerSnapshot snapshot = readPowerSupplies();
-        Supply external = snapshot.bestExternal;
-        Supply externalBattery = snapshot.bestExternalBattery;
+        boolean hasBatteryCurrent = validBatteryProperty(currentNowUa);
+        double batteryA = hasBatteryCurrent ? currentNowUa / 1_000_000.0 : Double.NaN;
+        double batteryMa = hasBatteryCurrent ? currentNowUa / 1000.0 : Double.NaN;
+        double batteryPowerW = (!Double.isNaN(batteryV) && hasBatteryCurrent) ? Math.abs(batteryV * batteryA) : Double.NaN;
+
+        PowerSnapshot sys = readPowerSupplies();
+        Supply ext = sys.bestExternal;
+        Double sysV = ext == null ? null : voltageFromAny(ext, "voltage_now", "voltage_avg", "voltage_ocv");
+        Double sysA = ext == null ? null : currentFromAny(ext, "current_now", "current_avg");
+        Double sysW = ext == null ? null : powerFromAny(ext, "power_now", "power_avg");
+        if (sysW == null && sysV != null && sysA != null) sysW = Math.abs(sysV * sysA);
 
         String plugName = pluggedName(plugged);
         if (charging) {
-            statusText.setText("LADEN AKTIV");
-            statusText.setTextColor(OK);
+            heroStatus.setText("LADEN AKTIV");
+            heroStatus.setTextColor(OK);
         } else if (plugged != 0) {
-            statusText.setText("QUELLE VERBUNDEN");
-            statusText.setTextColor(WARN);
+            heroStatus.setText("QUELLE VERBUNDEN");
+            heroStatus.setTextColor(WARN);
         } else {
-            statusText.setText("NICHT VERBUNDEN");
-            statusText.setTextColor(TEXT);
+            heroStatus.setText("NICHT VERBUNDEN");
+            heroStatus.setTextColor(TEXT);
         }
 
         set("plug", plugged != 0 ? plugName : "keine externe Quelle", plugged != 0 ? OK : MUTED);
         set("charging", charging ? "Ja" : "Nein", charging ? OK : MUTED);
-        set("supply", external != null ? external.name : "kein externer Knoten lesbar", external != null ? TEXT : MUTED);
 
-        String usbType = external != null ? firstNonEmpty(
-                external.get("usb_type"), external.get("real_type"), external.get("type"),
-                external.get("charger_type"), external.get("charge_type")) : null;
-        set("usbType", usbType != null ? usbType : plugName, usbType != null ? BLUE : MUTED);
+        String usbType = ext != null ? firstNonEmpty(ext.get("usb_type"), ext.get("real_type"), ext.get("type")) : null;
+        String pdProfile = firstNonEmpty(
+                ext != null ? ext.get("usb_type") : null,
+                ext != null ? ext.get("real_type") : null,
+                battery.getStringExtra("charger_type")
+        );
 
-        Double inputV = external != null ? voltageFromAny(external,
-                "voltage_now", "voltage_avg", "voltage_ocv", "pd_voltage",
-                "input_voltage_now", "vbus_voltage", "voltage_max") : null;
-        Double inputA = external != null ? currentFromAny(external,
-                "current_now", "current_avg", "pd_current", "input_current_now",
-                "ibus_current", "current_max", "input_current_limit") : null;
-        Double inputW = external != null ? powerFromAny(external,
-                "power_now", "power_avg", "input_power_now", "power_max") : null;
-        if (inputW == null && inputV != null && inputA != null) inputW = Math.abs(inputV * inputA);
-
-        // Fall back to max charger values reported in ACTION_BATTERY_CHANGED when OEM exposes them.
-        Double maxV = maxVoltageUv > 0 ? maxVoltageUv / 1_000_000.0 : null;
-        Double maxA = maxCurrentUa > 0 ? maxCurrentUa / 1_000_000.0 : null;
-        if (inputV == null && maxV != null) inputV = maxV;
-        if (inputA == null && maxA != null) inputA = maxA;
-        if (inputW == null && inputV != null && inputA != null) inputW = Math.abs(inputV * inputA);
-
-        set("inputVoltage", inputV != null ? fmt(inputV, 3) + " V" : "nicht freigegeben", inputV != null ? OK : MUTED);
-        set("inputCurrent", inputA != null ? fmt(Math.abs(inputA), 3) + " A" : "nicht freigegeben", inputA != null ? OK : MUTED);
-        set("inputPower", inputW != null ? fmt(Math.abs(inputW), 2) + " W" : "nicht direkt verfügbar", inputW != null ? OK : MUTED);
-        set("maxVoltage", maxV != null ? fmt(maxV, 2) + " V" : "nicht gemeldet", maxV != null ? BLUE : MUTED);
-        set("maxCurrent", maxA != null ? fmt(maxA, 2) + " A" : "nicht gemeldet", maxA != null ? BLUE : MUTED);
-
-        String pd = external != null ? firstNonEmpty(
-                external.get("pd_active"), external.get("pd_state"), external.get("pd_type"),
-                external.get("usb_type"), external.get("real_type"), external.get("adapter_type")) : null;
-        set("pdActive", pd != null ? pd : "nicht gemeldet", pd != null ? BLUE : MUTED);
+        if (viewMode == ViewMode.PROFILE) {
+            renderProfileSelection(maxVoltageUv, maxCurrentUa, pdProfile);
+        } else {
+            renderLiveSelection(sysV, sysA, sysW, batteryV, batteryA, batteryMa, batteryPowerW, ext, usbType);
+        }
 
         set("batteryPct", Double.isNaN(pct) ? "nicht gemeldet" : fmt(pct, 0) + " %", TEXT);
-        set("batteryVoltage", Double.isNaN(batteryV) ? "nicht gemeldet" : fmt(batteryV, 3) + " V", !Double.isNaN(batteryV) ? OK : MUTED);
-
-        Double currentNowA = validIntProperty(currentNowUa) ? currentNowUa / 1_000_000.0 : null;
-        Double currentAvgA = validIntProperty(currentAvgUa) ? currentAvgUa / 1_000_000.0 : null;
-        set("batteryCurrent", currentNowA != null ? fmt(currentNowA, 3) + " A" : "nicht gemeldet", currentNowA != null ? OK : MUTED);
-        set("batteryCurrentAvg", currentAvgA != null ? fmt(currentAvgA, 3) + " A" : "nicht gemeldet", currentAvgA != null ? TEXT : MUTED);
-
-        if (!Double.isNaN(batteryV) && currentNowA != null) {
-            set("batteryPower", fmt(Math.abs(batteryV * currentNowA), 2) + " W", OK);
-        } else {
-            set("batteryPower", "nicht berechenbar", MUTED);
-        }
-
-        set("chargeCounter", validIntProperty(chargeCounterUah) ? fmt(chargeCounterUah / 1000.0, 0) + " mAh" : "nicht gemeldet",
-                validIntProperty(chargeCounterUah) ? TEXT : MUTED);
-        set("energyCounter", validLongProperty(energyCounterNwh) ? fmt(energyCounterNwh / 1_000_000_000.0, 3) + " Wh" : "nicht gemeldet",
-                validLongProperty(energyCounterNwh) ? TEXT : MUTED);
+        set("batteryVoltage", Double.isNaN(batteryV) ? "nicht gemeldet" : fmt(batteryV, 3) + " V", Double.isNaN(batteryV) ? MUTED : OK);
+        set("batteryCurrentA", hasBatteryCurrent ? signedFmt(batteryA, 3) + " A" : "nicht gemeldet", hasBatteryCurrent ? OK : MUTED);
+        set("batteryCurrentMa", hasBatteryCurrent ? signedFmt(batteryMa, 0) + " mA" : "nicht gemeldet", hasBatteryCurrent ? OK : MUTED);
+        set("batteryAvg", validBatteryProperty(currentAvgUa) ? signedFmt(currentAvgUa / 1000.0, 0) + " mA" : "nicht gemeldet", validBatteryProperty(currentAvgUa) ? TEXT : MUTED);
+        set("batteryPower", Double.isNaN(batteryPowerW) ? "nicht berechenbar" : fmt(batteryPowerW, 2) + " W", Double.isNaN(batteryPowerW) ? MUTED : OK);
+        set("chargeCounter", validBatteryProperty(chargeCounterUah) ? fmt(chargeCounterUah / 1000.0, 0) + " mAh" : "nicht gemeldet", validBatteryProperty(chargeCounterUah) ? TEXT : MUTED);
         set("temperature", tempTenthC != Integer.MIN_VALUE ? fmt(tempTenthC / 10.0, 1) + " °C" : "nicht gemeldet", TEXT);
 
-        String pbSoc = externalBattery != null ? firstNonEmpty(externalBattery.get("capacity"), externalBattery.get("capacity_raw")) : null;
-        if (pbSoc == null && external != null && !looksLikePhoneBattery(external)) {
-            pbSoc = firstNonEmpty(external.get("capacity"), external.get("capacity_raw"));
+        set("maxVoltage", maxVoltageUv > 0 ? fmt(normalizeVoltageRaw(maxVoltageUv), 2) + " V · MAX" : "nicht gemeldet", maxVoltageUv > 0 ? BLUE : MUTED);
+        set("maxCurrent", maxCurrentUa > 0 ? fmt(normalizeCurrentRaw(maxCurrentUa), 2) + " A · MAX" : "nicht gemeldet", maxCurrentUa > 0 ? BLUE : MUTED);
+        if (maxVoltageUv > 0 && maxCurrentUa > 0) {
+            double maxW = normalizeVoltageRaw(maxVoltageUv) * Math.abs(normalizeCurrentRaw(maxCurrentUa));
+            set("maxPower", fmt(maxW, 2) + " W · RECHNERISCH", BLUE);
+        } else {
+            set("maxPower", "nicht berechenbar", MUTED);
         }
-        set("pbSoc", pbSoc != null ? normalizePercent(pbSoc) : "nicht übertragen", pbSoc != null ? OK : MUTED);
-        set("pbVoltage", inputV != null ? fmt(inputV, 3) + " V" : "nicht übertragen", inputV != null ? TEXT : MUTED);
-        set("pbCurrent", inputA != null ? fmt(Math.abs(inputA), 3) + " A" : "nicht übertragen", inputA != null ? TEXT : MUTED);
+        set("pdProfile", pdProfile != null ? pdProfile : "nicht gemeldet", pdProfile != null ? BLUE : MUTED);
 
-        Supply modelSupply = externalBattery != null ? externalBattery : external;
-        String model = modelSupply != null ? joinNonEmpty(" · ",
-                modelSupply.get("manufacturer"), modelSupply.get("model_name"), modelSupply.get("serial_number")) : null;
-        set("pbModel", model != null ? model : "nicht übertragen", model != null ? TEXT : MUTED);
+        updateFlow(charging, batteryMa, batteryPowerW);
+        updateEnergy(charging, batteryPowerW);
+        updateTotals();
 
-        latestDiagnostics = buildDiagnostics(battery, snapshot, currentNowUa, currentAvgUa,
-                chargeCounterUah, energyCounterNwh, maxCurrentUa, maxVoltageUv);
+        String activeSource;
+        if (viewMode == ViewMode.PROFILE) {
+            activeSource = "Android Ladeprofil / MAX";
+        } else if (sourceMode == SourceMode.BATTERY_API) {
+            activeSource = "BatteryManager · Akku-Seite";
+        } else if (sourceMode == SourceMode.SYSTEM) {
+            activeSource = ext != null ? "/sys/class/power_supply/" + ext.name : "Systemknoten nicht lesbar";
+        } else {
+            activeSource = (ext != null && (sysV != null || sysA != null)) ? "/sys/class/power_supply/" + ext.name : "BatteryManager · Akku-Seite";
+        }
+        set("apiSource", activeSource, activeSource.contains("nicht") ? WARN : BLUE);
+        heroSub.setText(viewMode == ViewMode.PROFILE
+                ? "Profilansicht aktiv · keine Livewerte als MAX-Werte tarnen"
+                : "Liveansicht aktiv · Aktualisierung jede Sekunde");
+
+        latestDiagnostics = buildDiagnostics(battery, sys, currentNowUa, currentAvgUa, chargeCounterUah, maxVoltageUv, maxCurrentUa);
         diagText.setText(latestDiagnostics);
     }
 
+    private void renderLiveSelection(Double sysV, Double sysA, Double sysW,
+                                     double batteryV, double batteryA, double batteryMa, double batteryPowerW,
+                                     Supply ext, String usbType) {
+        boolean systemLive = ext != null && (sysV != null || sysA != null || sysW != null);
+
+        if (sourceMode == SourceMode.SYSTEM || (sourceMode == SourceMode.AUTO && systemLive)) {
+            sourceQuality.setText(systemLive
+                    ? "ECHTE SYSTEM-LIVEWERTE · " + ext.name
+                    : "USB/PD-Systemwerte sind auf diesem Gerät für normale Apps nicht lesbar.");
+            sourceQuality.setTextColor(systemLive ? OK : WARN);
+            set("inputVoltage", sysV != null ? fmt(sysV, 3) + " V · LIVE" : "nicht freigegeben", sysV != null ? OK : MUTED);
+            set("inputCurrentA", sysA != null ? signedFmt(sysA, 3) + " A · LIVE" : "nicht freigegeben", sysA != null ? OK : MUTED);
+            set("inputCurrentMa", sysA != null ? signedFmt(sysA * 1000.0, 0) + " mA · LIVE" : "nicht freigegeben", sysA != null ? OK : MUTED);
+            set("inputPower", sysW != null ? fmt(Math.abs(sysW), 2) + " W · LIVE" : "nicht freigegeben", sysW != null ? OK : MUTED);
+            set("usbType", usbType != null ? usbType : "nicht gemeldet", usbType != null ? BLUE : MUTED);
+            return;
+        }
+
+        boolean battLive = !Double.isNaN(batteryV) || !Double.isNaN(batteryA);
+        sourceQuality.setText(battLive
+                ? (sourceMode == SourceMode.AUTO
+                    ? "AUTO: USB-Eingang gesperrt → echte Akku-Seiten-Livewerte werden gezeigt."
+                    : "ECHTE BATTERYMANAGER-LIVEWERTE · Akku-Seite")
+                : "Keine Live-Telemetrie verfügbar.");
+        sourceQuality.setTextColor(battLive ? OK : WARN);
+        set("inputVoltage", !Double.isNaN(batteryV) ? fmt(batteryV, 3) + " V · AKKU LIVE" : "nicht gemeldet", !Double.isNaN(batteryV) ? OK : MUTED);
+        set("inputCurrentA", !Double.isNaN(batteryA) ? signedFmt(batteryA, 3) + " A · AKKU LIVE" : "nicht gemeldet", !Double.isNaN(batteryA) ? OK : MUTED);
+        set("inputCurrentMa", !Double.isNaN(batteryMa) ? signedFmt(batteryMa, 0) + " mA · AKKU LIVE" : "nicht gemeldet", !Double.isNaN(batteryMa) ? OK : MUTED);
+        set("inputPower", !Double.isNaN(batteryPowerW) ? fmt(batteryPowerW, 2) + " W · AKKU LIVE" : "nicht berechenbar", !Double.isNaN(batteryPowerW) ? OK : MUTED);
+        set("usbType", "Akku-Seite · kein USB-Profil", MUTED);
+    }
+
+    private void renderProfileSelection(int maxVoltageUv, int maxCurrentUa, String pdProfile) {
+        sourceQuality.setText("PROFIL / MAX · bewusst getrennt von Live-Messung");
+        sourceQuality.setTextColor(WARN);
+        Double v = maxVoltageUv > 0 ? normalizeVoltageRaw(maxVoltageUv) : null;
+        Double a = maxCurrentUa > 0 ? normalizeCurrentRaw(maxCurrentUa) : null;
+        Double w = (v != null && a != null) ? Math.abs(v * a) : null;
+        set("inputVoltage", v != null ? fmt(v, 2) + " V · MAX" : "nicht gemeldet", v != null ? BLUE : MUTED);
+        set("inputCurrentA", a != null ? fmt(a, 2) + " A · MAX" : "nicht gemeldet", a != null ? BLUE : MUTED);
+        set("inputCurrentMa", a != null ? fmt(a * 1000.0, 0) + " mA · MAX" : "nicht gemeldet", a != null ? BLUE : MUTED);
+        set("inputPower", w != null ? fmt(w, 2) + " W · MAX, RECHNERISCH" : "nicht berechenbar", w != null ? BLUE : MUTED);
+        set("usbType", pdProfile != null ? pdProfile : "nicht gemeldet", pdProfile != null ? BLUE : MUTED);
+    }
+
+    private void updateFlow(boolean charging, double batteryMa, double batteryPowerW) {
+        if (!Double.isNaN(batteryPowerW)) flowChart.addPoint((float) batteryPowerW);
+        if (!Double.isNaN(batteryMa) && !Double.isNaN(batteryPowerW)) {
+            String arrow = charging ? "→ AKKU" : "← AKKU";
+            flowText.setText(arrow + "   " + signedFmt(batteryMa, 0) + " mA   ·   " + fmt(batteryPowerW, 2) + " W");
+            flowText.setTextColor(charging ? OK : WARN);
+        } else {
+            flowText.setText("Kein Live-Stromwert verfügbar");
+            flowText.setTextColor(MUTED);
+        }
+    }
+
+    private void updateEnergy(boolean charging, double batteryPowerW) {
+        long now = SystemClock.elapsedRealtime();
+        if (lastTickMs == 0L) lastTickMs = now;
+        double hours = Math.max(0.0, Math.min(5.0, (now - lastTickMs) / 1000.0)) / 3600.0;
+        lastTickMs = now;
+        rotateDayIfNeeded();
+        if (charging && !Double.isNaN(batteryPowerW) && batteryPowerW >= 0.0) {
+            double delta = batteryPowerW * hours;
+            sessionEnergyWh += delta;
+            todayEnergyWh += delta;
+        }
+        if (((int) now) % 10000 < 1100) saveDayEnergy();
+    }
+
+    private void updateTotals() {
+        set("sessionEnergy", formatEnergy(sessionEnergyWh), TEXT);
+        set("todayEnergy", formatEnergy(todayEnergyWh), TEXT);
+        double yearKwh = todayEnergyWh * 365.0 / 1000.0;
+        set("yearEnergy", fmt(yearKwh, 3) + " kWh/Jahr · HOCHRECHNUNG", yearKwh > 0 ? BLUE : MUTED);
+    }
+
+    private String formatEnergy(double wh) {
+        if (wh < 1.0) return fmt(wh * 1000.0, 1) + " mWh";
+        return fmt(wh, 3) + " Wh";
+    }
+
+    private void loadDayEnergy() {
+        currentDayKey = dayKey();
+        String savedDay = prefs.getString("day", "");
+        if (currentDayKey.equals(savedDay)) todayEnergyWh = Double.longBitsToDouble(prefs.getLong("energy", Double.doubleToLongBits(0.0)));
+        else todayEnergyWh = 0.0;
+    }
+
+    private void rotateDayIfNeeded() {
+        String k = dayKey();
+        if (!k.equals(currentDayKey)) {
+            currentDayKey = k;
+            todayEnergyWh = 0.0;
+            saveDayEnergy();
+        }
+    }
+
+    private void saveDayEnergy() {
+        prefs.edit()
+                .putString("day", currentDayKey)
+                .putLong("energy", Double.doubleToLongBits(todayEnergyWh))
+                .apply();
+    }
+
+    private String dayKey() {
+        return new SimpleDateFormat("yyyy-MM-dd", Locale.GERMANY).format(new Date());
+    }
+
     private long safeIntProperty(int id) {
-        try { return batteryManager.getIntProperty(id); }
-        catch (Throwable t) { return Long.MIN_VALUE; }
+        try {
+            return batteryManager.getIntProperty(id);
+        } catch (Throwable t) {
+            return Long.MIN_VALUE;
+        }
     }
 
-    private long safeLongProperty(int id) {
-        try { return batteryManager.getLongProperty(id); }
-        catch (Throwable t) { return Long.MIN_VALUE; }
-    }
-
-    private boolean validIntProperty(long v) {
-        return v != Long.MIN_VALUE && v != Integer.MIN_VALUE;
-    }
-
-    private boolean validLongProperty(long v) {
+    private boolean validBatteryProperty(long v) {
         return v != Long.MIN_VALUE && v != Integer.MIN_VALUE;
     }
 
     private PowerSnapshot readPowerSupplies() {
-        PowerSnapshot out = new PowerSnapshot();
+        PowerSnapshot snap = new PowerSnapshot();
         File root = new File("/sys/class/power_supply");
-        File[] nodes = root.listFiles();
-        if (nodes == null) return out;
+        Map<String, Supply> unique = new LinkedHashMap<>();
 
-        for (File node : nodes) {
-            Supply s = new Supply(node.getName());
-            readAllSmallTextFiles(s, node);
-            readUevent(s, new File(node, "uevent"));
-            out.supplies.add(s);
-        }
-        Collections.sort(out.supplies, Comparator.comparing(a -> a.name));
-
-        int externalScore = Integer.MIN_VALUE;
-        int externalBatteryScore = Integer.MIN_VALUE;
-        for (Supply s : out.supplies) {
-            int score = scoreExternal(s);
-            if (score > externalScore) {
-                externalScore = score;
-                out.bestExternal = score > 0 ? s : null;
-            }
-            int bscore = scoreExternalBattery(s);
-            if (bscore > externalBatteryScore) {
-                externalBatteryScore = bscore;
-                out.bestExternalBattery = bscore > 0 ? s : null;
-            }
-        }
-        return out;
-    }
-
-    private void readAllSmallTextFiles(Supply s, File dir) {
-        File[] files = dir.listFiles();
-        if (files == null) return;
-        for (File f : files) {
-            if (!f.isFile() || !f.canRead()) continue;
-            if ("uevent".equals(f.getName())) continue;
-            long len = f.length();
-            if (len > 4096) continue;
-            String v = readFirstLine(f);
-            if (v != null && !v.trim().isEmpty() && v.length() <= 256) {
-                s.values.put(f.getName().toLowerCase(Locale.US), v.trim());
-            }
-        }
-    }
-
-    private void readUevent(Supply s, File file) {
-        if (!file.canRead()) return;
-        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                int p = line.indexOf('=');
-                if (p <= 0) continue;
-                String key = line.substring(0, p).trim();
-                String value = line.substring(p + 1).trim();
-                if (key.startsWith("POWER_SUPPLY_")) {
-                    key = key.substring("POWER_SUPPLY_".length()).toLowerCase(Locale.US);
-                    if (!s.values.containsKey(key)) s.values.put(key, value);
+        try {
+            File[] dirs = root.listFiles();
+            if (dirs != null) {
+                for (File dir : dirs) {
+                    if (dir.isDirectory()) {
+                        Supply s = readSupply(dir);
+                        if (s != null) unique.put(s.name, s);
+                    }
                 }
             }
-        } catch (Exception ignored) { }
+        } catch (Throwable ignored) { }
+
+        String[] candidates = new String[]{
+                "usb", "USB", "ac", "AC", "charger", "main", "usbpd", "usb_pd", "dc", "wireless",
+                "battery", "bms", "pc_port", "qcom-battery", "mtk-master-charger"
+        };
+        for (String name : candidates) {
+            if (unique.containsKey(name)) continue;
+            File dir = new File(root, name);
+            Supply s = readSupply(dir);
+            if (s != null) unique.put(s.name, s);
+        }
+
+        snap.supplies.addAll(unique.values());
+        for (Supply s : snap.supplies) {
+            if (isExternalSupply(s)) {
+                if (snap.bestExternal == null) snap.bestExternal = s;
+                String online = s.get("online");
+                if ("1".equals(online)) {
+                    snap.bestExternal = s;
+                    break;
+                }
+            }
+        }
+        return snap;
     }
 
-    private String readFirstLine(File file) {
-        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-            return br.readLine();
-        } catch (Exception e) {
+    private Supply readSupply(File dir) {
+        try {
+            if (!dir.exists() || !dir.isDirectory()) return null;
+            Supply s = new Supply(dir.getName());
+            String[] keys = new String[]{
+                    "type", "usb_type", "real_type", "online", "present", "status",
+                    "voltage_now", "voltage_avg", "voltage_ocv", "voltage_max", "voltage_max_design",
+                    "current_now", "current_avg", "current_max", "current_max_design",
+                    "power_now", "power_avg", "power_max",
+                    "input_voltage_limit", "input_current_limit",
+                    "constant_charge_current", "constant_charge_current_max",
+                    "pd_active", "pd_state", "pd_voltage", "pd_current",
+                    "capacity", "capacity_raw", "manufacturer", "model_name", "serial_number"
+            };
+            int readCount = 0;
+            for (String key : keys) {
+                String value = readText(new File(dir, key));
+                if (value != null) {
+                    s.values.put(key, value);
+                    readCount++;
+                }
+            }
+            return readCount > 0 ? s : null;
+        } catch (Throwable t) {
             return null;
         }
     }
 
-    private int scoreExternal(Supply s) {
-        String name = lower(s.name);
-        String type = lower(s.get("type"));
-        if (looksLikePhoneBattery(s)) return -100;
-        int score = 0;
-        if ("1".equals(trim(s.get("online")))) score += 30;
-        if ("1".equals(trim(s.get("present")))) score += 5;
-        if (containsAny(type, "usb", "mains", "ac", "charger", "wireless")) score += 12;
-        if (containsAny(name, "usb", "pd", "charger", "chg", "dc", "typec", "main")) score += 9;
-        if (firstNonEmpty(s.get("voltage_now"), s.get("current_now"), s.get("usb_type"), s.get("real_type")) != null) score += 6;
-        return score;
+    private boolean isExternalSupply(Supply s) {
+        String n = s.name.toLowerCase(Locale.ROOT);
+        String type = s.get("type");
+        if (n.contains("battery") || "battery".equals(n) || "Battery".equalsIgnoreCase(type)) return false;
+        return true;
     }
 
-    private int scoreExternalBattery(Supply s) {
-        if (looksLikePhoneBattery(s)) return -100;
-        String type = lower(s.get("type"));
-        String name = lower(s.name);
-        int score = 0;
-        if (type.contains("battery")) score += 10;
-        if (s.get("capacity") != null) score += 12;
-        if (containsAny(name, "dock", "case", "powerbank", "external")) score += 15;
-        if ("1".equals(trim(s.get("present")))) score += 3;
-        return score;
-    }
-
-    private boolean looksLikePhoneBattery(Supply s) {
-        String name = lower(s.name);
-        if (name.equals("battery") || name.equals("bms") || name.equals("fg") || name.contains("main_battery")) return true;
-        String scope = lower(s.get("scope"));
-        if (scope.contains("system")) return true;
-        return false;
+    private String readText(File file) {
+        try {
+            if (!file.exists() || !file.isFile()) return null;
+            BufferedReader br = new BufferedReader(new FileReader(file));
+            String line = br.readLine();
+            br.close();
+            return line == null ? null : line.trim();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private Double voltageFromAny(Supply s, String... keys) {
         for (String key : keys) {
-            Double v = normalizeElectrical(s.get(key));
-            if (v != null && Math.abs(v) >= 0.05 && Math.abs(v) < 1000) return v;
+            Double raw = parseDouble(s.get(key));
+            if (raw != null && raw != 0.0) return normalizeVoltageRaw(raw);
         }
         return null;
     }
 
     private Double currentFromAny(Supply s, String... keys) {
         for (String key : keys) {
-            Double v = normalizeElectrical(s.get(key));
-            if (v != null && Math.abs(v) >= 0.001 && Math.abs(v) < 1000) return v;
+            Double raw = parseDouble(s.get(key));
+            if (raw != null && raw != 0.0) return normalizeCurrentRaw(raw);
         }
         return null;
     }
 
     private Double powerFromAny(Supply s, String... keys) {
         for (String key : keys) {
-            Double v = normalizeElectrical(s.get(key));
-            if (v != null && Math.abs(v) >= 0.01 && Math.abs(v) < 10000) return v;
+            Double raw = parseDouble(s.get(key));
+            if (raw != null && raw != 0.0) {
+                double a = Math.abs(raw);
+                if (a > 100000.0) return raw / 1_000_000.0;
+                if (a > 1000.0) return raw / 1000.0;
+                return raw;
+            }
         }
         return null;
     }
 
-    private Double normalizeElectrical(String raw) {
-        Double x = parseDouble(raw);
-        if (x == null) return null;
-        double a = Math.abs(x);
-        if (a >= 100000.0) return x / 1_000_000.0;
-        if (a >= 1000.0) return x / 1000.0;
-        return x;
+    private double normalizeVoltageRaw(double raw) {
+        double a = Math.abs(raw);
+        if (a > 100000.0) return raw / 1_000_000.0;
+        if (a > 100.0) return raw / 1000.0;
+        return raw;
     }
 
-    private Double parseDouble(String raw) {
-        if (raw == null) return null;
-        try { return Double.parseDouble(raw.trim().replace(',', '.')); }
-        catch (Exception e) { return null; }
+    private double normalizeCurrentRaw(double raw) {
+        double a = Math.abs(raw);
+        if (a > 100000.0) return raw / 1_000_000.0;
+        if (a > 100.0) return raw / 1000.0;
+        return raw;
     }
 
-    private String buildDiagnostics(Intent battery, PowerSnapshot snapshot,
-                                    long currentNowUa, long currentAvgUa,
-                                    long chargeCounterUah, long energyCounterNwh,
-                                    int maxCurrentUa, int maxVoltageUv) {
+    private Double parseDouble(String s) {
+        if (s == null) return null;
+        try { return Double.parseDouble(s.trim()); }
+        catch (Throwable t) { return null; }
+    }
+
+    private String buildDiagnostics(Intent battery, PowerSnapshot sys, long currentNowUa, long currentAvgUa,
+                                    long chargeCounterUah, int maxVoltageUv, int maxCurrentUa) {
         StringBuilder sb = new StringBuilder();
-        sb.append("CCOP USB-C LadeMonitor Diagnose\n");
-        sb.append("device=").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n');
-        sb.append("android=").append(Build.VERSION.RELEASE).append(" api=").append(Build.VERSION.SDK_INT).append("\n\n");
-        sb.append("[ANDROID BATTERY]\n");
-        sb.append("plugged=").append(battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)).append('\n');
-        sb.append("status=").append(battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1)).append('\n');
-        sb.append("level=").append(battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)).append('\n');
-        sb.append("voltage_mV=").append(battery.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1)).append('\n');
-        sb.append("temperature_0.1C=").append(battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE)).append('\n');
-        sb.append("max_charging_current_uA=").append(maxCurrentUa).append('\n');
-        sb.append("max_charging_voltage_uV=").append(maxVoltageUv).append('\n');
+        sb.append("CCOP USB-C LadeMonitor · RAW\n");
+        sb.append("Zeit: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.GERMANY).format(new Date())).append('\n');
+        sb.append("sourceMode=").append(sourceMode).append("  viewMode=").append(viewMode).append("\n\n");
+        sb.append("BatteryManager\n");
         sb.append("current_now_uA=").append(currentNowUa).append('\n');
-        sb.append("current_average_uA=").append(currentAvgUa).append('\n');
+        sb.append("current_avg_uA=").append(currentAvgUa).append('\n');
         sb.append("charge_counter_uAh=").append(chargeCounterUah).append('\n');
-        sb.append("energy_counter_nWh=").append(energyCounterNwh).append("\n\n");
-        sb.append("best_external=").append(snapshot.bestExternal != null ? snapshot.bestExternal.name : "none").append('\n');
-        sb.append("best_external_battery=").append(snapshot.bestExternalBattery != null ? snapshot.bestExternalBattery.name : "none").append("\n\n");
-        sb.append("[/sys/class/power_supply]\n");
-        if (snapshot.supplies.isEmpty()) {
-            sb.append("Keine lesbaren Power-Supply-Knoten.\n");
+        sb.append("max_charging_voltage_raw=").append(maxVoltageUv).append('\n');
+        sb.append("max_charging_current_raw=").append(maxCurrentUa).append('\n');
+
+        Bundle extras = battery.getExtras();
+        if (extras != null) {
+            sb.append("\nBattery broadcast extras\n");
+            for (String key : extras.keySet()) {
+                String low = key.toLowerCase(Locale.ROOT);
+                if (low.contains("volt") || low.contains("curr") || low.contains("charg") || low.contains("plug") || low.contains("power") || low.contains("usb")) {
+                    Object val = extras.get(key);
+                    sb.append(key).append('=').append(String.valueOf(val)).append('\n');
+                }
+            }
+        }
+
+        sb.append("\n/sys/class/power_supply\n");
+        if (sys.supplies.isEmpty()) {
+            sb.append("keine lesbaren Knoten\n");
         } else {
-            for (Supply s : snapshot.supplies) {
-                sb.append("\n<").append(s.name).append(">\n");
+            for (Supply s : sys.supplies) {
+                sb.append('[').append(s.name).append("]\n");
                 for (Map.Entry<String, String> e : s.values.entrySet()) {
                     sb.append(e.getKey()).append('=').append(e.getValue()).append('\n');
                 }
@@ -491,135 +664,180 @@ public class MainActivity extends Activity {
         startActivity(Intent.createChooser(send, "Diagnose teilen"));
     }
 
-    private String pluggedName(int plugged) {
-        List<String> out = new ArrayList<>();
-        if ((plugged & BatteryManager.BATTERY_PLUGGED_USB) != 0) out.add("USB / USB-C");
-        if ((plugged & BatteryManager.BATTERY_PLUGGED_AC) != 0) out.add("Netzteil / AC");
-        if ((plugged & BatteryManager.BATTERY_PLUGGED_WIRELESS) != 0) out.add("Wireless");
-        if (Build.VERSION.SDK_INT >= 33 && (plugged & BatteryManager.BATTERY_PLUGGED_DOCK) != 0) out.add("Dock");
-        return out.isEmpty() ? "Unbekannt" : join(out, " + ");
+    private void addSourceButton(LinearLayout row, String label, SourceMode mode) {
+        Button b = choiceButton(label);
+        b.setTag(mode);
+        b.setOnClickListener(v -> {
+            sourceMode = mode;
+            viewMode = ViewMode.LIVE;
+            refreshButtonStyles();
+            refreshTelemetry();
+        });
+        sourceButtons.add(b);
+        row.addView(b, choiceLp());
     }
 
-    private String normalizePercent(String raw) {
-        Double n = parseDouble(raw);
-        if (n == null) return raw;
-        return n >= 0 && n <= 100 ? fmt(n, 0) + " %" : raw;
+    private void addViewButton(LinearLayout row, String label, ViewMode mode) {
+        Button b = choiceButton(label);
+        b.setTag(mode);
+        b.setOnClickListener(v -> {
+            viewMode = mode;
+            refreshButtonStyles();
+            refreshTelemetry();
+        });
+        viewButtons.add(b);
+        row.addView(b, choiceLp());
     }
 
-    private void set(String key, String value, int color) {
-        TextView tv = values.get(key);
-        if (tv == null) return;
-        tv.setText(value);
-        tv.setTextColor(color);
+    private void refreshButtonStyles() {
+        for (Button b : sourceButtons) {
+            boolean active = b.getTag() == sourceMode;
+            styleChoice(b, active);
+        }
+        for (Button b : viewButtons) {
+            boolean active = b.getTag() == viewMode;
+            styleChoice(b, active);
+        }
+    }
+
+    private void styleChoice(Button b, boolean active) {
+        GradientDrawable gd = new GradientDrawable();
+        gd.setCornerRadius(dp(14));
+        gd.setColor(active ? Color.rgb(25, 87, 58) : PANEL2);
+        gd.setStroke(dp(1), active ? OK : LINE);
+        b.setBackground(gd);
+        b.setTextColor(active ? OK : TEXT);
+    }
+
+    private LinearLayout horizontalButtons() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(8), 0, 0);
+        return row;
+    }
+
+    private HorizontalScrollView wrapHorizontal(LinearLayout row) {
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.addView(row);
+        return hsv;
+    }
+
+    private LinearLayout.LayoutParams choiceLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(46));
+        lp.setMargins(0, 0, dp(8), 0);
+        return lp;
+    }
+
+    private Button choiceButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(12);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setAllCaps(false);
+        b.setPadding(dp(14), 0, dp(14), 0);
+        return b;
     }
 
     private void addMetric(LinearLayout parent, String key, String label) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(9), 0, dp(9));
+        row.setPadding(0, dp(8), 0, dp(8));
         TextView l = text(label, 13, MUTED, false);
-        row.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView v = text("—", 15, TEXT, true);
+        TextView v = text("—", 14, TEXT, true);
         v.setGravity(Gravity.END);
-        v.setMaxWidth(dp(230));
-        row.addView(v, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(v, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f));
         values.put(key, v);
         parent.addView(row);
     }
 
+    private void set(String key, String value, int color) {
+        TextView tv = values.get(key);
+        if (tv != null) {
+            tv.setText(value);
+            tv.setTextColor(color);
+        }
+    }
+
     private LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(16), dp(16), dp(16));
-        c.setBackground(roundRect(PANEL, 20, LINE));
-        c.setElevation(dp(2));
-        return c;
-    }
-
-    private TextView sectionTitle(String value) {
-        TextView t = text(value, 11, MUTED, true);
-        t.setLetterSpacing(0.12f);
-        return t;
-    }
-
-    private TextView text(String value, int sizeSp, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextSize(sizeSp);
-        t.setTextColor(color);
-        t.setLineSpacing(0f, 1.08f);
-        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        return t;
-    }
-
-    private Button button(String value) {
-        Button b = new Button(this);
-        b.setText(value);
-        b.setAllCaps(false);
-        b.setTextSize(12);
-        b.setTextColor(TEXT);
-        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        b.setBackground(roundRect(PANEL2, 14, LINE));
-        return b;
-    }
-
-    private GradientDrawable roundRect(int fill, int radiusDp, int stroke) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(fill);
-        d.setCornerRadius(dp(radiusDp));
-        d.setStroke(dp(1), stroke);
-        return d;
+        LinearLayout ll = new LinearLayout(this);
+        ll.setOrientation(LinearLayout.VERTICAL);
+        ll.setPadding(dp(16), dp(16), dp(16), dp(16));
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(PANEL);
+        gd.setCornerRadius(dp(24));
+        gd.setStroke(dp(1), LINE);
+        ll.setBackground(gd);
+        return ll;
     }
 
     private LinearLayout.LayoutParams marginBottom() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, 0, 0, dp(12));
         return lp;
     }
 
-    private int dp(int v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
+    private TextView sectionTitle(String s) {
+        TextView t = text(s, 12, MUTED, true);
+        t.setLetterSpacing(0.11f);
+        return t;
     }
 
-    private String fmt(double value, int digits) {
-        return String.format(Locale.GERMANY, "%." + digits + "f", value);
+    private TextView text(String s, int sp, int color, boolean bold) {
+        TextView tv = new TextView(this);
+        tv.setText(s);
+        tv.setTextSize(sp);
+        tv.setTextColor(color);
+        if (bold) tv.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        tv.setLineSpacing(0, 1.08f);
+        return tv;
+    }
+
+    private Button button(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(12);
+        b.setTextColor(TEXT);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.rgb(24, 32, 40));
+        gd.setCornerRadius(dp(15));
+        gd.setStroke(dp(1), LINE);
+        b.setBackground(gd);
+        return b;
+    }
+
+    private int dp(int n) {
+        return Math.round(n * getResources().getDisplayMetrics().density);
+    }
+
+    private String pluggedName(int plugged) {
+        if ((plugged & BatteryManager.BATTERY_PLUGGED_AC) != 0) return "Netzteil / AC";
+        if ((plugged & BatteryManager.BATTERY_PLUGGED_USB) != 0) return "USB";
+        if ((plugged & BatteryManager.BATTERY_PLUGGED_WIRELESS) != 0) return "Wireless";
+        return plugged == 0 ? "keine" : "extern";
+    }
+
+    private String fmt(double v, int decimals) {
+        return String.format(Locale.GERMANY, "%." + decimals + "f", v);
+    }
+
+    private String signedFmt(double v, int decimals) {
+        return String.format(Locale.GERMANY, "%+." + decimals + "f", v);
     }
 
     private String firstNonEmpty(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) return value.trim();
-        }
+        if (values == null) return null;
+        for (String s : values) if (s != null && !s.trim().isEmpty()) return s.trim();
         return null;
-    }
-
-    private String joinNonEmpty(String separator, String... values) {
-        List<String> found = new ArrayList<>();
-        for (String value : values) if (value != null && !value.trim().isEmpty()) found.add(value.trim());
-        return found.isEmpty() ? null : join(found, separator);
-    }
-
-    private String join(List<String> values, String separator) {
-        StringBuilder sb = new StringBuilder();
-        for (String value : values) {
-            if (sb.length() > 0) sb.append(separator);
-            sb.append(value);
-        }
-        return sb.toString();
-    }
-
-    private String lower(String v) { return v == null ? "" : v.toLowerCase(Locale.US); }
-    private String trim(String v) { return v == null ? "" : v.trim(); }
-
-    private boolean containsAny(String haystack, String... needles) {
-        for (String needle : needles) if (haystack.contains(needle)) return true;
-        return false;
     }
 
     private static class Supply {
         final String name;
-        final LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        final Map<String, String> values = new LinkedHashMap<>();
         Supply(String name) { this.name = name; }
         String get(String key) { return values.get(key); }
     }
@@ -627,6 +845,70 @@ public class MainActivity extends Activity {
     private static class PowerSnapshot {
         final List<Supply> supplies = new ArrayList<>();
         Supply bestExternal;
-        Supply bestExternalBattery;
+    }
+
+    private static class FlowChartView extends View {
+        private final List<Float> points = new ArrayList<>();
+        private final Paint grid = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        FlowChartView(Context c) {
+            super(c);
+            grid.setColor(Color.rgb(43, 56, 68));
+            grid.setStrokeWidth(1f);
+            line.setColor(Color.rgb(72, 229, 139));
+            line.setStyle(Paint.Style.STROKE);
+            line.setStrokeWidth(4f);
+            line.setStrokeJoin(Paint.Join.ROUND);
+            line.setStrokeCap(Paint.Cap.ROUND);
+            fill.setColor(Color.argb(36, 72, 229, 139));
+            fill.setStyle(Paint.Style.FILL);
+            label.setColor(Color.rgb(151, 164, 178));
+            label.setTextSize(28f);
+        }
+
+        void addPoint(float p) {
+            if (Float.isNaN(p) || Float.isInfinite(p)) return;
+            points.add(Math.max(0f, p));
+            while (points.size() > 120) points.remove(0);
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            int w = getWidth();
+            int h = getHeight();
+            c.drawLine(0, h * 0.25f, w, h * 0.25f, grid);
+            c.drawLine(0, h * 0.50f, w, h * 0.50f, grid);
+            c.drawLine(0, h * 0.75f, w, h * 0.75f, grid);
+            if (points.size() < 2) {
+                c.drawText("Live-Kurve startet nach 2 Messpunkten", 12, h / 2f, label);
+                return;
+            }
+            float max = 0.1f;
+            for (float p : points) max = Math.max(max, p);
+            Path path = new Path();
+            Path area = new Path();
+            float dx = w / (float) Math.max(1, points.size() - 1);
+            for (int i = 0; i < points.size(); i++) {
+                float x = i * dx;
+                float y = h - (points.get(i) / max) * (h - 16f) - 8f;
+                if (i == 0) {
+                    path.moveTo(x, y);
+                    area.moveTo(x, h);
+                    area.lineTo(x, y);
+                } else {
+                    path.lineTo(x, y);
+                    area.lineTo(x, y);
+                }
+            }
+            area.lineTo(w, h);
+            area.close();
+            c.drawPath(area, fill);
+            c.drawPath(path, line);
+            c.drawText(String.format(Locale.GERMANY, "max %.2f W", max), 12, 30, label);
+        }
     }
 }
