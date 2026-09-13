@@ -1,0 +1,12 @@
+{
+  "name": "ccop-voice-web",
+  "private": true,
+  "version": "1.1.0",
+  "type": "module",
+  "scripts": {"build": "vite build"},
+  "dependencies": {
+    "@jtsage/piper-tts-web": "1.2.0",
+    "onnxruntime-web": "1.22.0"
+  },
+  "devDependencies": {"vite": "7.1.5"}
+}
