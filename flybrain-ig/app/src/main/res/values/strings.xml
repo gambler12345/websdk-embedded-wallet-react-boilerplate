@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FlyBrain Doomscroll</string>
+    <string name="accessibility_service_desc">Optionaler Instagram-Assistent für manuelles und zeitgesteuertes Scrollen. Erfordert ausdrückliche Aktivierung in Android Bedienungshilfen.</string>
+</resources>
