@@ -1,0 +1,10 @@
+name: PflanzenPlan Runner Test
+on:
+  push:
+    branches: [pflanzenplan-apk-build]
+    paths: ['pflanzenplan-build/RUNNER_TEST']
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo runner-ok
