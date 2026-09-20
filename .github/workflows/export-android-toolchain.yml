@@ -1,0 +1,42 @@
+name: Export Android Toolchain
+on:
+  push:
+    branches: [ pflanzenplan-apk-build ]
+    paths:
+      - '.github/workflows/export-android-toolchain.yml'
+      - 'android-toolchain-trigger.txt'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect SDK
+        run: |
+          set -euxo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls -la "$ANDROID_HOME/build-tools"
+          ls -la "$ANDROID_HOME/platforms"
+      - name: Ensure API 35 components
+        run: |
+          set -euxo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - name: Package minimal toolchain
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/android-toolchain/build-tools /tmp/android-toolchain/platforms
+          cp -a "$ANDROID_HOME/build-tools/35.0.0" /tmp/android-toolchain/build-tools/
+          cp -a "$ANDROID_HOME/platforms/android-35" /tmp/android-toolchain/platforms/
+          cd /tmp
+          tar -czf android-toolchain-api35.tar.gz android-toolchain
+          sha256sum android-toolchain-api35.tar.gz > android-toolchain-api35.tar.gz.sha256
+          ls -lh android-toolchain-api35.tar.gz
+      - name: Upload toolchain
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-toolchain-api35
+          path: |
+            /tmp/android-toolchain-api35.tar.gz
+            /tmp/android-toolchain-api35.tar.gz.sha256
+          compression-level: 0
+          retention-days: 1
