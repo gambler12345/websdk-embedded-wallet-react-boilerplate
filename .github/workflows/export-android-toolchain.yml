@@ -15,12 +15,9 @@ jobs:
         run: |
           set -euxo pipefail
           echo "ANDROID_HOME=$ANDROID_HOME"
-          ls -la "$ANDROID_HOME/build-tools"
-          ls -la "$ANDROID_HOME/platforms"
-      - name: Ensure API 35 components
-        run: |
-          set -euxo pipefail
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+          ls -la "$ANDROID_HOME/build-tools/35.0.0"
       - name: Package minimal toolchain
         run: |
           set -euxo pipefail
