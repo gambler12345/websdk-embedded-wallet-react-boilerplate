@@ -32,6 +32,8 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     private static final String KEY_RANDOM_MIN = "random_min_ms";
     private static final String KEY_RANDOM_MAX = "random_max_ms";
     private static final String KEY_OVERLAY_VISIBLE = "overlay_visible";
+    private static final String KEY_PANEL_X = "panel_x";
+    private static final String KEY_PANEL_Y = "panel_y";
 
     private static final long[] INTERVALS = {0, 10, 25, 50, 100, 250, 500, 1000};
     private static final long PRESS_DURATION_MS = 8;
@@ -48,6 +50,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     private LinearLayout controls;
     private LinearLayout randomRow;
     private WindowManager.LayoutParams targetLp;
+    private WindowManager.LayoutParams controlsLp;
     private Button startPause;
     private Button stopButton;
     private Button intervalMinus;
@@ -68,23 +71,21 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     private long randomMaxMs = 140;
     private float xFraction = .5f;
     private float yFraction = .45f;
+    private float panelXFraction = .5f;
+    private float panelYFraction = .72f;
 
     public static void requestShowOverlays(Context context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_OVERLAY_VISIBLE, true).apply();
         AutoClickAccessibilityService service = instance;
-        if (service != null) {
-            service.handler.post(service::ensureOverlaysVisible);
-        }
+        if (service != null) service.handler.post(service::ensureOverlaysVisible);
     }
 
     public static void requestHideOverlays(Context context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_OVERLAY_VISIBLE, false).apply();
         AutoClickAccessibilityService service = instance;
-        if (service != null) {
-            service.handler.post(service::hideOverlays);
-        }
+        if (service != null) service.handler.post(service::hideOverlays);
     }
 
     @Override
@@ -93,43 +94,28 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         xFraction = prefs.getFloat(KEY_X, .5f);
         yFraction = prefs.getFloat(KEY_Y, .45f);
+        panelXFraction = prefs.getFloat(KEY_PANEL_X, .5f);
+        panelYFraction = prefs.getFloat(KEY_PANEL_Y, .72f);
         intervalIndex = Math.max(0, Math.min(INTERVALS.length - 1, prefs.getInt(KEY_I, 2)));
         randomMode = prefs.getBoolean(KEY_RANDOM_MODE, false);
         randomMinMs = clampLong(prefs.getLong(KEY_RANDOM_MIN, 80), RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
         randomMaxMs = clampLong(prefs.getLong(KEY_RANDOM_MAX, 140), RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
         if (randomMaxMs < randomMinMs) randomMaxMs = randomMinMs;
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-
-        if (prefs.getBoolean(KEY_OVERLAY_VISIBLE, false)) {
-            ensureOverlaysVisible();
-        }
+        if (prefs.getBoolean(KEY_OVERLAY_VISIBLE, false)) ensureOverlaysVisible();
     }
 
-    private int dp(float v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
-    }
+    private int dp(float v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private int sw() { return getResources().getDisplayMetrics().widthPixels; }
+    private int sh() { return getResources().getDisplayMetrics().heightPixels; }
+    private int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
+    private long clampLong(long v, long min, long max) { return Math.max(min, Math.min(max, v)); }
 
     private GradientDrawable bg(int color, float radius) {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
         d.setCornerRadius(dp(radius));
         return d;
-    }
-
-    private int sw() {
-        return getResources().getDisplayMetrics().widthPixels;
-    }
-
-    private int sh() {
-        return getResources().getDisplayMetrics().heightPixels;
-    }
-
-    private int clamp(int v, int min, int max) {
-        return Math.max(min, Math.min(max, v));
-    }
-
-    private long clampLong(long v, long min, long max) {
-        return Math.max(min, Math.min(max, v));
     }
 
     private void ensureOverlaysVisible() {
@@ -141,7 +127,6 @@ public class AutoClickAccessibilityService extends AccessibilityService {
 
     private void showTarget() {
         if (target != null || wm == null) return;
-
         TextView marker = new TextView(this);
         marker.setText("+");
         marker.setTextColor(Color.WHITE);
@@ -154,8 +139,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
 
         int size = dp(58);
         targetLp = new WindowManager.LayoutParams(
-                size,
-                size,
+                size, size,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
@@ -167,32 +151,26 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         marker.setOnTouchListener(new View.OnTouchListener() {
             float downRawX, downRawY;
             int startX, startY;
-
-            @Override
-            public boolean onTouch(View v, MotionEvent e) {
+            @Override public boolean onTouch(View v, MotionEvent e) {
                 if (running || paused) return false;
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        downRawX = e.getRawX();
-                        downRawY = e.getRawY();
-                        startX = targetLp.x;
-                        startY = targetLp.y;
+                        downRawX = e.getRawX(); downRawY = e.getRawY();
+                        startX = targetLp.x; startY = targetLp.y;
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         targetLp.x = clamp(startX + Math.round(e.getRawX() - downRawX), 0, Math.max(0, sw() - targetLp.width));
                         targetLp.y = clamp(startY + Math.round(e.getRawY() - downRawY), 0, Math.max(0, sh() - targetLp.height));
-                        wm.updateViewLayout(target, targetLp);
+                        try { wm.updateViewLayout(target, targetLp); } catch (Exception ignored) {}
                         return true;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
-                        savePosition();
+                        saveTargetPosition();
                         return true;
-                    default:
-                        return false;
+                    default: return false;
                 }
             }
         });
-
         target = marker;
         wm.addView(target, targetLp);
     }
@@ -228,22 +206,41 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         panel.setBackground(bg(Color.argb(238, 16, 17, 20), 22));
         panel.setElevation(dp(12));
 
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button dragHandle = small("↕ ZIEHEN");
+        dragHandle.setTextSize(11);
+        dragHandle.setBackground(bg(Color.rgb(62, 66, 76), 15));
+        headerRow.addView(dragHandle, new LinearLayout.LayoutParams(dp(122), dp(38)));
+
+        Button closeButton = small("✕ BEENDEN");
+        closeButton.setTextSize(11);
+        closeButton.setBackground(bg(Color.rgb(150, 28, 34), 15));
+        closeButton.setOnClickListener(v -> hideOverlays());
+        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(112), dp(38));
+        closeLp.setMargins(dp(8), 0, 0, 0);
+        headerRow.addView(closeButton, closeLp);
+        panel.addView(headerRow);
+
         LinearLayout timingRow = new LinearLayout(this);
         timingRow.setOrientation(LinearLayout.HORIZONTAL);
         timingRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams timingLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        timingLp.setMargins(0, dp(5), 0, 0);
+        timingRow.setLayoutParams(timingLp);
 
         intervalMinus = small("−");
         intervalMinus.setOnClickListener(v -> changeInterval(-1));
         timingRow.addView(intervalMinus, new LinearLayout.LayoutParams(dp(36), dp(40)));
-
         intervalLabel = compactLabel("", 12, 62);
         updateInterval();
         timingRow.addView(intervalLabel);
-
         intervalPlus = small("+");
         intervalPlus.setOnClickListener(v -> changeInterval(1));
         timingRow.addView(intervalPlus, new LinearLayout.LayoutParams(dp(36), dp(40)));
-
         modeButton = small("FIX");
         modeButton.setTextSize(11);
         modeButton.setOnClickListener(v -> toggleMode());
@@ -256,14 +253,11 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         randomRow.setOrientation(LinearLayout.HORIZONTAL);
         randomRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams randomRowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         randomRowLp.setMargins(0, dp(5), 0, 0);
         randomRow.setLayoutParams(randomRowLp);
 
-        TextView minTitle = compactLabel("MIN", 10, 34);
-        randomRow.addView(minTitle);
+        randomRow.addView(compactLabel("MIN", 10, 34));
         Button minMinus = small("−");
         minMinus.setOnClickListener(v -> changeRandomMin(-RANDOM_STEP_MS));
         randomRow.addView(minMinus, new LinearLayout.LayoutParams(dp(30), dp(36)));
@@ -292,9 +286,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams actionRowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         actionRowLp.setMargins(0, dp(5), 0, 0);
         actionRow.setLayoutParams(actionRowLp);
 
@@ -326,17 +318,53 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         updateRandomLabels();
         updateModeUi();
 
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+        controlsLp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
         );
-        lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-        lp.y = dp(24);
+        controlsLp.gravity = Gravity.TOP | Gravity.START;
+        controlsLp.x = clamp(Math.round(panelXFraction * sw() - dp(125)), 0, Math.max(0, sw() - dp(250)));
+        controlsLp.y = clamp(Math.round(panelYFraction * sh() - dp(85)), 0, Math.max(0, sh() - dp(170)));
+
+        dragHandle.setOnTouchListener(new View.OnTouchListener() {
+            float downRawX, downRawY;
+            int startX, startY;
+            @Override public boolean onTouch(View v, MotionEvent e) {
+                if (controlsLp == null || controls == null || wm == null) return false;
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawX = e.getRawX(); downRawY = e.getRawY();
+                        startX = controlsLp.x; startY = controlsLp.y;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int width = Math.max(dp(250), controls.getWidth());
+                        int height = Math.max(dp(120), controls.getHeight());
+                        controlsLp.x = clamp(startX + Math.round(e.getRawX() - downRawX), 0, Math.max(0, sw() - width));
+                        controlsLp.y = clamp(startY + Math.round(e.getRawY() - downRawY), 0, Math.max(0, sh() - height));
+                        try { wm.updateViewLayout(controls, controlsLp); } catch (Exception ignored) {}
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        savePanelPosition();
+                        return true;
+                    default: return false;
+                }
+            }
+        });
+
         controls = panel;
-        wm.addView(controls, lp);
+        wm.addView(controls, controlsLp);
+        controls.post(() -> {
+            if (controls == null || controlsLp == null || wm == null) return;
+            int width = Math.max(1, controls.getWidth());
+            int height = Math.max(1, controls.getHeight());
+            controlsLp.x = clamp(Math.round(panelXFraction * sw() - width / 2f), 0, Math.max(0, sw() - width));
+            controlsLp.y = clamp(Math.round(panelYFraction * sh() - height / 2f), 0, Math.max(0, sh() - height));
+            try { wm.updateViewLayout(controls, controlsLp); } catch (Exception ignored) {}
+        });
     }
 
     private void toggleMode() {
@@ -349,25 +377,12 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     private void updateModeUi() {
         if (modeButton != null) {
             modeButton.setText(randomMode ? "RANDOM" : "FIX");
-            modeButton.setBackground(bg(
-                    randomMode ? Color.rgb(73, 88, 190) : Color.rgb(45, 47, 53),
-                    15
-            ));
+            modeButton.setBackground(bg(randomMode ? Color.rgb(73, 88, 190) : Color.rgb(45, 47, 53), 15));
         }
-        if (randomRow != null) {
-            randomRow.setVisibility(randomMode ? View.VISIBLE : View.GONE);
-        }
-        if (intervalMinus != null) {
-            intervalMinus.setEnabled(!randomMode);
-            intervalMinus.setAlpha(randomMode ? .35f : 1f);
-        }
-        if (intervalPlus != null) {
-            intervalPlus.setEnabled(!randomMode);
-            intervalPlus.setAlpha(randomMode ? .35f : 1f);
-        }
-        if (intervalLabel != null) {
-            intervalLabel.setAlpha(randomMode ? .45f : 1f);
-        }
+        if (randomRow != null) randomRow.setVisibility(randomMode ? View.VISIBLE : View.GONE);
+        if (intervalMinus != null) { intervalMinus.setEnabled(!randomMode); intervalMinus.setAlpha(randomMode ? .35f : 1f); }
+        if (intervalPlus != null) { intervalPlus.setEnabled(!randomMode); intervalPlus.setAlpha(randomMode ? .35f : 1f); }
+        if (intervalLabel != null) intervalLabel.setAlpha(randomMode ? .45f : 1f);
     }
 
     private void changeInterval(int delta) {
@@ -387,24 +402,19 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         if (running || paused) return;
         randomMinMs = clampLong(randomMinMs + delta, RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
         if (randomMinMs > randomMaxMs) randomMaxMs = randomMinMs;
-        persistRandomRange();
-        updateRandomLabels();
+        persistRandomRange(); updateRandomLabels();
     }
 
     private void changeRandomMax(long delta) {
         if (running || paused) return;
         randomMaxMs = clampLong(randomMaxMs + delta, RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
         if (randomMaxMs < randomMinMs) randomMinMs = randomMaxMs;
-        persistRandomRange();
-        updateRandomLabels();
+        persistRandomRange(); updateRandomLabels();
     }
 
     private void persistRandomRange() {
         if (prefs == null) return;
-        prefs.edit()
-                .putLong(KEY_RANDOM_MIN, randomMinMs)
-                .putLong(KEY_RANDOM_MAX, randomMaxMs)
-                .apply();
+        prefs.edit().putLong(KEY_RANDOM_MIN, randomMinMs).putLong(KEY_RANDOM_MAX, randomMaxMs).apply();
     }
 
     private void updateRandomLabels() {
@@ -416,20 +426,16 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         if (randomMode) {
             long min = Math.max(MIN_CLICK_PERIOD_MS, randomMinMs);
             long max = Math.max(min, randomMaxMs);
-            if (max == min) return min;
-            return ThreadLocalRandom.current().nextLong(min, max + 1);
+            return max == min ? min : ThreadLocalRandom.current().nextLong(min, max + 1);
         }
-
         long selected = INTERVALS[intervalIndex];
-        if (selected == 0) return MIN_CLICK_PERIOD_MS;
-        return Math.max(MIN_CLICK_PERIOD_MS, selected);
+        return selected == 0 ? MIN_CLICK_PERIOD_MS : Math.max(MIN_CLICK_PERIOD_MS, selected);
     }
 
     private void startLoop() {
         if (running || targetLp == null) return;
-        savePosition();
-        paused = false;
-        running = true;
+        saveTargetPosition();
+        paused = false; running = true;
         long generation = ++runGeneration;
         handler.removeCallbacksAndMessages(null);
         updateRunningUi();
@@ -438,9 +444,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
 
     private void pauseLoop() {
         if (!running) return;
-        running = false;
-        paused = true;
-        ++runGeneration;
+        running = false; paused = true; ++runGeneration;
         handler.removeCallbacksAndMessages(null);
         if (startPause != null) {
             startPause.setText("WEITER");
@@ -455,8 +459,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
 
     private void resumeLoop() {
         if (!paused || targetLp == null) return;
-        paused = false;
-        running = true;
+        paused = false; running = true;
         long generation = ++runGeneration;
         handler.removeCallbacksAndMessages(null);
         updateRunningUi();
@@ -464,11 +467,8 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     }
 
     private void stopLoop() {
-        running = false;
-        paused = false;
-        ++runGeneration;
+        running = false; paused = false; ++runGeneration;
         handler.removeCallbacksAndMessages(null);
-
         if (startPause != null) {
             startPause.setText("START");
             startPause.setBackground(bg(Color.rgb(36, 135, 74), 18));
@@ -497,10 +497,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         if (!touchable) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         targetLp.flags = flags;
-        try {
-            wm.updateViewLayout(target, targetLp);
-        } catch (Exception ignored) {
-        }
+        try { wm.updateViewLayout(target, targetLp); } catch (Exception ignored) {}
     }
 
     private void scheduleTap(long generation, long delayMs) {
@@ -508,76 +505,57 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         handler.postDelayed(() -> {
             if (!running || generation != runGeneration || targetLp == null) return;
             dispatchSingleTap();
-            // In RANDOM mode this value is redrawn after every click.
             scheduleTap(generation, currentClickPeriodMs());
         }, Math.max(0, delayMs));
     }
 
     private void dispatchSingleTap() {
         if (targetLp == null) return;
-
         float x = targetLp.x + targetLp.width / 2f;
         float y = targetLp.y + targetLp.height / 2f;
         Path path = new Path();
         path.moveTo(x, y);
-
-        GestureDescription.StrokeDescription stroke =
-                new GestureDescription.StrokeDescription(path, 0, PRESS_DURATION_MS);
-        GestureDescription gesture = new GestureDescription.Builder()
-                .addStroke(stroke)
-                .build();
-
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, PRESS_DURATION_MS);
+        GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
         dispatchGesture(gesture, new GestureResultCallback() {
-            @Override
-            public void onCompleted(GestureDescription description) {
-                // Timer-driven loop: callback does not control repetition.
-            }
-
-            @Override
-            public void onCancelled(GestureDescription description) {
-                // Timer continues and tries again on the next scheduled cycle.
-            }
+            @Override public void onCompleted(GestureDescription description) {}
+            @Override public void onCancelled(GestureDescription description) {}
         }, null);
     }
 
-    private void savePosition() {
+    private void saveTargetPosition() {
         if (targetLp == null || prefs == null) return;
-        xFraction = Math.max(0f, Math.min(1f,
-                (targetLp.x + targetLp.width / 2f) / Math.max(1f, sw())));
-        yFraction = Math.max(0f, Math.min(1f,
-                (targetLp.y + targetLp.height / 2f) / Math.max(1f, sh())));
+        xFraction = Math.max(0f, Math.min(1f, (targetLp.x + targetLp.width / 2f) / Math.max(1f, sw())));
+        yFraction = Math.max(0f, Math.min(1f, (targetLp.y + targetLp.height / 2f) / Math.max(1f, sh())));
         prefs.edit().putFloat(KEY_X, xFraction).putFloat(KEY_Y, yFraction).apply();
     }
 
+    private void savePanelPosition() {
+        if (controls == null || controlsLp == null || prefs == null) return;
+        int width = Math.max(1, controls.getWidth());
+        int height = Math.max(1, controls.getHeight());
+        panelXFraction = Math.max(0f, Math.min(1f, (controlsLp.x + width / 2f) / Math.max(1f, sw())));
+        panelYFraction = Math.max(0f, Math.min(1f, (controlsLp.y + height / 2f) / Math.max(1f, sh())));
+        prefs.edit().putFloat(KEY_PANEL_X, panelXFraction).putFloat(KEY_PANEL_Y, panelYFraction).apply();
+    }
+
     private void hideOverlays() {
-        if (prefs != null) {
-            prefs.edit().putBoolean(KEY_OVERLAY_VISIBLE, false).apply();
-        }
+        if (prefs != null) prefs.edit().putBoolean(KEY_OVERLAY_VISIBLE, false).apply();
         stopLoop();
         removeOverlays();
     }
 
     private void removeOverlays() {
         if (wm != null) {
-            if (target != null) {
-                try { wm.removeView(target); } catch (Exception ignored) {}
-            }
-            if (controls != null) {
-                try { wm.removeView(controls); } catch (Exception ignored) {}
-            }
+            if (target != null) try { wm.removeView(target); } catch (Exception ignored) {}
+            if (controls != null) try { wm.removeView(controls); } catch (Exception ignored) {}
         }
-        target = null;
-        targetLp = null;
-        controls = null;
+        target = null; targetLp = null;
+        controls = null; controlsLp = null;
         randomRow = null;
-        startPause = null;
-        stopButton = null;
-        intervalMinus = null;
-        intervalPlus = null;
-        modeButton = null;
-        intervalLabel = null;
-        randomMinLabel = null;
-        randomMaxLabel = null;
+        startPause = null; stopButton = null;
+        intervalMinus = null; intervalPlus = null; modeButton = null;
+        intervalLabel = null; randomMinLabel = null; randomMaxLabel = null;
     }
 
     @Override
@@ -589,29 +567,29 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        if (target == null || targetLp == null || wm == null) return;
-        targetLp.x = clamp(Math.round(xFraction * sw() - targetLp.width / 2f), 0, Math.max(0, sw() - targetLp.width));
-        targetLp.y = clamp(Math.round(yFraction * sh() - targetLp.height / 2f), 0, Math.max(0, sh() - targetLp.height));
-        try {
-            wm.updateViewLayout(target, targetLp);
-        } catch (Exception ignored) {
+        if (target != null && targetLp != null && wm != null) {
+            targetLp.x = clamp(Math.round(xFraction * sw() - targetLp.width / 2f), 0, Math.max(0, sw() - targetLp.width));
+            targetLp.y = clamp(Math.round(yFraction * sh() - targetLp.height / 2f), 0, Math.max(0, sh() - targetLp.height));
+            try { wm.updateViewLayout(target, targetLp); } catch (Exception ignored) {}
+        }
+        if (controls != null && controlsLp != null && wm != null) {
+            controls.post(() -> {
+                if (controls == null || controlsLp == null || wm == null) return;
+                int width = Math.max(1, controls.getWidth());
+                int height = Math.max(1, controls.getHeight());
+                controlsLp.x = clamp(Math.round(panelXFraction * sw() - width / 2f), 0, Math.max(0, sw() - width));
+                controlsLp.y = clamp(Math.round(panelYFraction * sh() - height / 2f), 0, Math.max(0, sh() - height));
+                try { wm.updateViewLayout(controls, controlsLp); } catch (Exception ignored) {}
+            });
         }
     }
 
-    @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {
-    }
-
-    @Override
-    public void onInterrupt() {
-        stopLoop();
-    }
+    @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
+    @Override public void onInterrupt() { stopLoop(); }
 
     @Override
     public void onDestroy() {
-        running = false;
-        paused = false;
-        ++runGeneration;
+        running = false; paused = false; ++runGeneration;
         handler.removeCallbacksAndMessages(null);
         removeOverlays();
         if (instance == this) instance = null;
