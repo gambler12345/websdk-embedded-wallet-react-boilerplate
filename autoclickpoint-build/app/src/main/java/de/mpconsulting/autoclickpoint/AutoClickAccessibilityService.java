@@ -3,6 +3,7 @@ package de.mpconsulting.autoclickpoint;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -21,9 +22,19 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public class AutoClickAccessibilityService extends AccessibilityService {
-    private static final String PREFS = "autoclick_prefs", KEY_X = "x", KEY_Y = "y", KEY_I = "interval";
+    private static final String PREFS = "autoclick_prefs";
+    private static final String KEY_X = "x";
+    private static final String KEY_Y = "y";
+    private static final String KEY_I = "interval";
+    private static final String KEY_OVERLAY_VISIBLE = "overlay_visible";
+
     private static final long[] INTERVALS = {0, 10, 25, 50, 100, 250, 500, 1000};
-    private static final long PRESS_DURATION_MS = 45;
+    // A StrokeDescription is a complete touch: DOWN at start, UP after this duration.
+    private static final long PRESS_DURATION_MS = 8;
+    // Prevent a new gesture from overlapping the previous release on slower devices.
+    private static final long MIN_CLICK_PERIOD_MS = 16;
+
+    private static volatile AutoClickAccessibilityService instance;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WindowManager wm;
@@ -37,41 +48,87 @@ public class AutoClickAccessibilityService extends AccessibilityService {
 
     private boolean running = false;
     private boolean paused = false;
-    private boolean gestureInFlight = false;
     private long runGeneration = 0;
-    private long gestureSerial = 0;
-    private long activeGestureSerial = 0;
 
     private int intervalIndex = 2;
-    private float xFraction = .5f, yFraction = .45f;
+    private float xFraction = .5f;
+    private float yFraction = .45f;
+
+    public static void requestShowOverlays(Context context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_OVERLAY_VISIBLE, true).apply();
+        AutoClickAccessibilityService service = instance;
+        if (service != null) {
+            service.handler.post(service::ensureOverlaysVisible);
+        }
+    }
+
+    public static void requestHideOverlays(Context context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_OVERLAY_VISIBLE, false).apply();
+        AutoClickAccessibilityService service = instance;
+        if (service != null) {
+            service.handler.post(service::hideOverlays);
+        }
+    }
 
     @Override
     protected void onServiceConnected() {
+        instance = this;
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         xFraction = prefs.getFloat(KEY_X, .5f);
         yFraction = prefs.getFloat(KEY_Y, .45f);
         intervalIndex = Math.max(0, Math.min(INTERVALS.length - 1, prefs.getInt(KEY_I, 2)));
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        showTarget();
-        showControls();
+
+        // Only show the floating UI while the user has an active AutoClick Point task.
+        if (prefs.getBoolean(KEY_OVERLAY_VISIBLE, false)) {
+            ensureOverlaysVisible();
+        }
     }
 
-    private int dp(float v) { return Math.round(v * getResources().getDisplayMetrics().density); }
-    private GradientDrawable bg(int color, float radius) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius)); return d; }
-    private int sw() { return getResources().getDisplayMetrics().widthPixels; }
-    private int sh() { return getResources().getDisplayMetrics().heightPixels; }
-    private int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
+    private int dp(float v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private GradientDrawable bg(int color, float radius) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radius));
+        return d;
+    }
+
+    private int sw() {
+        return getResources().getDisplayMetrics().widthPixels;
+    }
+
+    private int sh() {
+        return getResources().getDisplayMetrics().heightPixels;
+    }
+
+    private int clamp(int v, int min, int max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
+    private void ensureOverlaysVisible() {
+        if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (prefs == null) prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (target == null) showTarget();
+        if (controls == null) showControls();
+    }
 
     private void showTarget() {
-        TextView m = new TextView(this);
-        m.setText("+");
-        m.setTextColor(Color.WHITE);
-        m.setTextSize(27);
-        m.setGravity(Gravity.CENTER);
+        if (target != null || wm == null) return;
+
+        TextView marker = new TextView(this);
+        marker.setText("+");
+        marker.setTextColor(Color.WHITE);
+        marker.setTextSize(27);
+        marker.setGravity(Gravity.CENTER);
         GradientDrawable targetBg = bg(Color.rgb(215, 25, 32), 100);
         targetBg.setStroke(dp(2), Color.WHITE);
-        m.setBackground(targetBg);
-        m.setElevation(dp(8));
+        marker.setBackground(targetBg);
+        marker.setElevation(dp(8));
 
         int size = dp(58);
         targetLp = new WindowManager.LayoutParams(
@@ -85,23 +142,23 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         targetLp.x = clamp(Math.round(xFraction * sw() - size / 2f), 0, Math.max(0, sw() - size));
         targetLp.y = clamp(Math.round(yFraction * sh() - size / 2f), 0, Math.max(0, sh() - size));
 
-        m.setOnTouchListener(new View.OnTouchListener() {
-            float dx, dy;
-            int sx, sy;
+        marker.setOnTouchListener(new View.OnTouchListener() {
+            float downRawX, downRawY;
+            int startX, startY;
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
                 if (running || paused) return false;
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        dx = e.getRawX();
-                        dy = e.getRawY();
-                        sx = targetLp.x;
-                        sy = targetLp.y;
+                        downRawX = e.getRawX();
+                        downRawY = e.getRawY();
+                        startX = targetLp.x;
+                        startY = targetLp.y;
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        targetLp.x = clamp(sx + Math.round(e.getRawX() - dx), 0, Math.max(0, sw() - targetLp.width));
-                        targetLp.y = clamp(sy + Math.round(e.getRawY() - dy), 0, Math.max(0, sh() - targetLp.height));
+                        targetLp.x = clamp(startX + Math.round(e.getRawX() - downRawX), 0, Math.max(0, sw() - targetLp.width));
+                        targetLp.y = clamp(startY + Math.round(e.getRawY() - downRawY), 0, Math.max(0, sh() - targetLp.height));
                         wm.updateViewLayout(target, targetLp);
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -114,7 +171,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
             }
         });
 
-        target = m;
+        target = marker;
         wm.addView(target, targetLp);
     }
 
@@ -130,27 +187,29 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     }
 
     private void showControls() {
-        LinearLayout p = new LinearLayout(this);
-        p.setOrientation(LinearLayout.HORIZONTAL);
-        p.setGravity(Gravity.CENTER_VERTICAL);
-        p.setPadding(dp(7), dp(6), dp(7), dp(6));
-        p.setBackground(bg(Color.argb(238, 16, 17, 20), 22));
-        p.setElevation(dp(12));
+        if (controls != null || wm == null) return;
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.HORIZONTAL);
+        panel.setGravity(Gravity.CENTER_VERTICAL);
+        panel.setPadding(dp(7), dp(6), dp(7), dp(6));
+        panel.setBackground(bg(Color.argb(238, 16, 17, 20), 22));
+        panel.setElevation(dp(12));
 
         Button minus = small("−");
         minus.setOnClickListener(v -> changeInterval(-1));
-        p.addView(minus, new LinearLayout.LayoutParams(dp(38), dp(44)));
+        panel.addView(minus, new LinearLayout.LayoutParams(dp(38), dp(44)));
 
         intervalLabel = new TextView(this);
         intervalLabel.setTextColor(Color.WHITE);
         intervalLabel.setTextSize(12);
         intervalLabel.setGravity(Gravity.CENTER);
         updateInterval();
-        p.addView(intervalLabel, new LinearLayout.LayoutParams(dp(66), dp(44)));
+        panel.addView(intervalLabel, new LinearLayout.LayoutParams(dp(66), dp(44)));
 
         Button plus = small("+");
         plus.setOnClickListener(v -> changeInterval(1));
-        p.addView(plus, new LinearLayout.LayoutParams(dp(38), dp(44)));
+        panel.addView(plus, new LinearLayout.LayoutParams(dp(38), dp(44)));
 
         startPause = new Button(this);
         startPause.setText("START");
@@ -165,7 +224,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         });
         LinearLayout.LayoutParams startLp = new LinearLayout.LayoutParams(dp(82), dp(44));
         startLp.setMargins(dp(7), 0, 0, 0);
-        p.addView(startPause, startLp);
+        panel.addView(startPause, startLp);
 
         stopButton = new Button(this);
         stopButton.setText("STOP");
@@ -176,7 +235,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         stopButton.setOnClickListener(v -> stopLoop());
         LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(dp(70), dp(44));
         stopLp.setMargins(dp(7), 0, 0, 0);
-        p.addView(stopButton, stopLp);
+        panel.addView(stopButton, stopLp);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -187,39 +246,45 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         );
         lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
         lp.y = dp(28);
-        controls = p;
+        controls = panel;
         wm.addView(controls, lp);
     }
 
-    private void changeInterval(int d) {
+    private void changeInterval(int delta) {
         if (running || paused) return;
-        intervalIndex = Math.max(0, Math.min(INTERVALS.length - 1, intervalIndex + d));
+        intervalIndex = Math.max(0, Math.min(INTERVALS.length - 1, intervalIndex + delta));
         prefs.edit().putInt(KEY_I, intervalIndex).apply();
         updateInterval();
     }
 
     private void updateInterval() {
-        if (intervalLabel != null) {
-            long ms = INTERVALS[intervalIndex];
-            intervalLabel.setText(ms == 0 ? "MAX" : ms + " ms");
-        }
+        if (intervalLabel == null) return;
+        long ms = INTERVALS[intervalIndex];
+        intervalLabel.setText(ms == 0 ? "MAX" : ms + " ms");
+    }
+
+    private long currentClickPeriodMs() {
+        long selected = INTERVALS[intervalIndex];
+        if (selected == 0) return MIN_CLICK_PERIOD_MS;
+        return Math.max(MIN_CLICK_PERIOD_MS, selected);
     }
 
     private void startLoop() {
-        if (running) return;
+        if (running || targetLp == null) return;
         savePosition();
         paused = false;
         running = true;
-        runGeneration++;
+        long generation = ++runGeneration;
+        handler.removeCallbacksAndMessages(null);
         updateRunningUi();
-        scheduleNext(0, runGeneration);
+        scheduleTap(generation, 0);
     }
 
     private void pauseLoop() {
         if (!running) return;
         running = false;
         paused = true;
-        runGeneration++;
+        ++runGeneration;
         handler.removeCallbacksAndMessages(null);
         if (startPause != null) {
             startPause.setText("WEITER");
@@ -233,18 +298,19 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     }
 
     private void resumeLoop() {
-        if (!paused) return;
+        if (!paused || targetLp == null) return;
         paused = false;
         running = true;
-        runGeneration++;
+        long generation = ++runGeneration;
+        handler.removeCallbacksAndMessages(null);
         updateRunningUi();
-        scheduleNext(0, runGeneration);
+        scheduleTap(generation, 0);
     }
 
     private void stopLoop() {
         running = false;
         paused = false;
-        runGeneration++;
+        ++runGeneration;
         handler.removeCallbacksAndMessages(null);
 
         if (startPause != null) {
@@ -270,28 +336,34 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         }
     }
 
-    private void setTargetTouchable(boolean touch) {
-        if (target == null) return;
+    private void setTargetTouchable(boolean touchable) {
+        if (target == null || targetLp == null || wm == null) return;
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-        if (!touch) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        if (!touchable) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         targetLp.flags = flags;
-        wm.updateViewLayout(target, targetLp);
+        try {
+            wm.updateViewLayout(target, targetLp);
+        } catch (Exception ignored) {
+        }
     }
 
-    private void scheduleNext(long delay, long generation) {
+    /**
+     * The loop is intentionally driven by the Handler timer, not by GestureResultCallback.
+     * Some OEM builds can fail to deliver a completion callback even though the first tap
+     * was injected successfully. A missing callback therefore can no longer stop the loop.
+     */
+    private void scheduleTap(long generation, long delayMs) {
         if (!running || generation != runGeneration) return;
         handler.postDelayed(() -> {
-            if (!running || generation != runGeneration) return;
-            if (gestureInFlight) {
-                scheduleNext(10, generation);
-                return;
-            }
-            performPressRelease(generation);
-        }, Math.max(0, delay));
+            if (!running || generation != runGeneration || targetLp == null) return;
+            dispatchSingleTap();
+            // Start-to-start click period. A minimum period guarantees the previous UP has happened.
+            scheduleTap(generation, currentClickPeriodMs());
+        }, Math.max(0, delayMs));
     }
 
-    private void performPressRelease(long generation) {
-        if (!running || generation != runGeneration || gestureInFlight) return;
+    private void dispatchSingleTap() {
+        if (targetLp == null) return;
 
         float x = targetLp.x + targetLp.width / 2f;
         float y = targetLp.y + targetLp.height / 2f;
@@ -300,65 +372,94 @@ public class AutoClickAccessibilityService extends AccessibilityService {
 
         GestureDescription.StrokeDescription stroke =
                 new GestureDescription.StrokeDescription(path, 0, PRESS_DURATION_MS);
-        GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
+        GestureDescription gesture = new GestureDescription.Builder()
+                .addStroke(stroke)
+                .build();
 
-        final long thisGesture = ++gestureSerial;
-        activeGestureSerial = thisGesture;
-        gestureInFlight = true;
-
-        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+        // No loop state is changed from the callback. The next click is timer-driven.
+        dispatchGesture(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription description) {
-                if (activeGestureSerial == thisGesture) gestureInFlight = false;
-                if (running && generation == runGeneration) {
-                    scheduleNext(INTERVALS[intervalIndex], generation);
-                }
+                // Intentionally empty.
             }
 
             @Override
             public void onCancelled(GestureDescription description) {
-                if (activeGestureSerial == thisGesture) gestureInFlight = false;
-                if (running && generation == runGeneration) {
-                    scheduleNext(Math.max(10, INTERVALS[intervalIndex]), generation);
-                }
+                // Intentionally empty; the timer continues and retries on the next cycle.
             }
-        }, handler);
-
-        if (!accepted) {
-            if (activeGestureSerial == thisGesture) gestureInFlight = false;
-            scheduleNext(Math.max(25, INTERVALS[intervalIndex]), generation);
-        }
+        }, null);
     }
 
     private void savePosition() {
         if (targetLp == null || prefs == null) return;
-        xFraction = Math.max(0f, Math.min(1f, (targetLp.x + targetLp.width / 2f) / Math.max(1f, sw())));
-        yFraction = Math.max(0f, Math.min(1f, (targetLp.y + targetLp.height / 2f) / Math.max(1f, sh())));
+        xFraction = Math.max(0f, Math.min(1f,
+                (targetLp.x + targetLp.width / 2f) / Math.max(1f, sw())));
+        yFraction = Math.max(0f, Math.min(1f,
+                (targetLp.y + targetLp.height / 2f) / Math.max(1f, sh())));
         prefs.edit().putFloat(KEY_X, xFraction).putFloat(KEY_Y, yFraction).apply();
     }
 
-    @Override
-    public void onConfigurationChanged(Configuration c) {
-        super.onConfigurationChanged(c);
-        if (target == null) return;
-        targetLp.x = clamp(Math.round(xFraction * sw() - targetLp.width / 2f), 0, Math.max(0, sw() - targetLp.width));
-        targetLp.y = clamp(Math.round(yFraction * sh() - targetLp.height / 2f), 0, Math.max(0, sh() - targetLp.height));
-        wm.updateViewLayout(target, targetLp);
+    private void hideOverlays() {
+        if (prefs != null) {
+            prefs.edit().putBoolean(KEY_OVERLAY_VISIBLE, false).apply();
+        }
+        stopLoop();
+        removeOverlays();
     }
 
-    @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
-    @Override public void onInterrupt() { stopLoop(); }
+    private void removeOverlays() {
+        if (wm != null) {
+            if (target != null) {
+                try { wm.removeView(target); } catch (Exception ignored) {}
+            }
+            if (controls != null) {
+                try { wm.removeView(controls); } catch (Exception ignored) {}
+            }
+        }
+        target = null;
+        targetLp = null;
+        controls = null;
+        startPause = null;
+        stopButton = null;
+        intervalLabel = null;
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // Swiping AutoClick Point away from Recents closes its floating UI as well.
+        hideOverlays();
+        super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (target == null || targetLp == null || wm == null) return;
+        targetLp.x = clamp(Math.round(xFraction * sw() - targetLp.width / 2f), 0, Math.max(0, sw() - targetLp.width));
+        targetLp.y = clamp(Math.round(yFraction * sh() - targetLp.height / 2f), 0, Math.max(0, sh() - targetLp.height));
+        try {
+            wm.updateViewLayout(target, targetLp);
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+    }
+
+    @Override
+    public void onInterrupt() {
+        stopLoop();
+    }
 
     @Override
     public void onDestroy() {
         running = false;
         paused = false;
-        runGeneration++;
+        ++runGeneration;
         handler.removeCallbacksAndMessages(null);
-        if (wm != null) {
-            if (target != null) try { wm.removeView(target); } catch (Exception ignored) {}
-            if (controls != null) try { wm.removeView(controls); } catch (Exception ignored) {}
-        }
+        removeOverlays();
+        if (instance == this) instance = null;
         super.onDestroy();
     }
 }
