@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         root.addView(title);
 
-        TextView lead = text("Klick → loslassen → Intervall → Klick → Klick → Klick. Bis Pause oder Stop.", 18, Color.DKGRAY);
+        TextView lead = text("FIX oder RANDOM: Klick → loslassen → nächster Klick. Bis Pause oder Stop.", 18, Color.DKGRAY);
         LinearLayout.LayoutParams leadLp = new LinearLayout.LayoutParams(-1, -2);
         leadLp.setMargins(0, dp(10), 0, dp(16));
         root.addView(lead, leadLp);
@@ -111,8 +111,9 @@ public class MainActivity extends Activity {
         root.addView(checkAgain, checkLp);
 
         TextView behavior = text(
-                "Neu in v1.0.4: Die Klickserie läuft zeitgesteuert weiter und hängt nicht mehr vom Android-Gesten-Callback ab. "
-                        + "Wenn AutoClick Point mit Zurück beendet oder aus der App-Übersicht weggewischt wird, verschwinden Zielpunkt und Steuerleiste ebenfalls und die Klickserie stoppt.",
+                "Neu in v1.0.5: Im schwebenden Bedienfeld kannst du zwischen FIX und RANDOM wechseln. "
+                        + "Im RANDOM-Modus stellst du MIN und MAX separat ein, zum Beispiel 80–140 ms. "
+                        + "Nach jedem Klick wird der nächste Abstand neu zufällig innerhalb dieses Bereichs gewählt. Die Einstellung bleibt gespeichert.",
                 14,
                 Color.rgb(38, 38, 42)
         );
@@ -121,9 +122,9 @@ public class MainActivity extends Activity {
         root.addView(behavior, behaviorLp);
 
         root.addView(text(
-                "Bedienung: Zielpunkt setzen → Intervall wählen → START. "
+                "Bedienung: Zielpunkt setzen → FIX oder RANDOM wählen → Intervall bzw. MIN/MAX einstellen → START. "
                         + "PAUSE hält an, WEITER setzt fort. STOP beendet vollständig. "
-                        + "MAX verwendet die schnellstmögliche stabile Folge; bei festen Intervallen wird der nächste Klick entsprechend zeitgesteuert gestartet.",
+                        + "FIX verwendet den gewählten festen Abstand; RANDOM zieht für jeden Folgeklick einen neuen Wert zwischen MIN und MAX.",
                 15,
                 Color.rgb(38, 38, 42)
         ));
@@ -143,14 +144,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // Opening the app means the user wants the floating controls available.
         AutoClickAccessibilityService.requestShowOverlays(this);
         refreshStatus();
     }
 
     @Override
     protected void onDestroy() {
-        // Back/finish is a real close. Merely switching to another app is not.
         if (isFinishing() && !isChangingConfigurations()) {
             AutoClickAccessibilityService.requestHideOverlays(this);
         }
