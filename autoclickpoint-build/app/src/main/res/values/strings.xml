@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">AutoClick Point</string>
+    <string name="accessibility_name">AutoClick Point – Klickdienst</string>
+    <string name="accessibility_desc">Führt ausschließlich den vom Nutzer festgelegten, wiederholten Klick auf einer festen Bildschirmposition aus. Start, Pause und Klickintervall werden vom Nutzer gesteuert.</string>
+</resources>
