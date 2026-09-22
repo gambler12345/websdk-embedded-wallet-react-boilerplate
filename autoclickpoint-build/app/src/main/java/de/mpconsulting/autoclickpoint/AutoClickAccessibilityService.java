@@ -21,18 +21,24 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.util.concurrent.ThreadLocalRandom;
+
 public class AutoClickAccessibilityService extends AccessibilityService {
     private static final String PREFS = "autoclick_prefs";
     private static final String KEY_X = "x";
     private static final String KEY_Y = "y";
     private static final String KEY_I = "interval";
+    private static final String KEY_RANDOM_MODE = "random_mode";
+    private static final String KEY_RANDOM_MIN = "random_min_ms";
+    private static final String KEY_RANDOM_MAX = "random_max_ms";
     private static final String KEY_OVERLAY_VISIBLE = "overlay_visible";
 
     private static final long[] INTERVALS = {0, 10, 25, 50, 100, 250, 500, 1000};
-    // A StrokeDescription is a complete touch: DOWN at start, UP after this duration.
     private static final long PRESS_DURATION_MS = 8;
-    // Prevent a new gesture from overlapping the previous release on slower devices.
     private static final long MIN_CLICK_PERIOD_MS = 16;
+    private static final long RANDOM_STEP_MS = 10;
+    private static final long RANDOM_MIN_ALLOWED_MS = 20;
+    private static final long RANDOM_MAX_ALLOWED_MS = 5000;
 
     private static volatile AutoClickAccessibilityService instance;
 
@@ -40,17 +46,26 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     private WindowManager wm;
     private View target;
     private LinearLayout controls;
+    private LinearLayout randomRow;
     private WindowManager.LayoutParams targetLp;
     private Button startPause;
     private Button stopButton;
+    private Button intervalMinus;
+    private Button intervalPlus;
+    private Button modeButton;
     private TextView intervalLabel;
+    private TextView randomMinLabel;
+    private TextView randomMaxLabel;
     private SharedPreferences prefs;
 
     private boolean running = false;
     private boolean paused = false;
+    private boolean randomMode = false;
     private long runGeneration = 0;
 
     private int intervalIndex = 2;
+    private long randomMinMs = 80;
+    private long randomMaxMs = 140;
     private float xFraction = .5f;
     private float yFraction = .45f;
 
@@ -79,9 +94,12 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         xFraction = prefs.getFloat(KEY_X, .5f);
         yFraction = prefs.getFloat(KEY_Y, .45f);
         intervalIndex = Math.max(0, Math.min(INTERVALS.length - 1, prefs.getInt(KEY_I, 2)));
+        randomMode = prefs.getBoolean(KEY_RANDOM_MODE, false);
+        randomMinMs = clampLong(prefs.getLong(KEY_RANDOM_MIN, 80), RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
+        randomMaxMs = clampLong(prefs.getLong(KEY_RANDOM_MAX, 140), RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
+        if (randomMaxMs < randomMinMs) randomMaxMs = randomMinMs;
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
 
-        // Only show the floating UI while the user has an active AutoClick Point task.
         if (prefs.getBoolean(KEY_OVERLAY_VISIBLE, false)) {
             ensureOverlaysVisible();
         }
@@ -107,6 +125,10 @@ public class AutoClickAccessibilityService extends AccessibilityService {
     }
 
     private int clamp(int v, int min, int max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
+    private long clampLong(long v, long min, long max) {
         return Math.max(min, Math.min(max, v));
     }
 
@@ -179,37 +201,102 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         Button b = new Button(this);
         b.setText(text);
         b.setTextColor(Color.WHITE);
-        b.setTextSize(16);
+        b.setTextSize(15);
         b.setAllCaps(false);
         b.setPadding(0, 0, 0, 0);
-        b.setBackground(bg(Color.rgb(45, 47, 53), 18));
+        b.setBackground(bg(Color.rgb(45, 47, 53), 15));
         return b;
+    }
+
+    private TextView compactLabel(String text, float sp, int widthDp) {
+        TextView label = new TextView(this);
+        label.setText(text);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(sp);
+        label.setGravity(Gravity.CENTER);
+        label.setLayoutParams(new LinearLayout.LayoutParams(dp(widthDp), dp(38)));
+        return label;
     }
 
     private void showControls() {
         if (controls != null || wm == null) return;
 
         LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.HORIZONTAL);
-        panel.setGravity(Gravity.CENTER_VERTICAL);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setGravity(Gravity.CENTER_HORIZONTAL);
         panel.setPadding(dp(7), dp(6), dp(7), dp(6));
         panel.setBackground(bg(Color.argb(238, 16, 17, 20), 22));
         panel.setElevation(dp(12));
 
-        Button minus = small("−");
-        minus.setOnClickListener(v -> changeInterval(-1));
-        panel.addView(minus, new LinearLayout.LayoutParams(dp(38), dp(44)));
+        LinearLayout timingRow = new LinearLayout(this);
+        timingRow.setOrientation(LinearLayout.HORIZONTAL);
+        timingRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        intervalLabel = new TextView(this);
-        intervalLabel.setTextColor(Color.WHITE);
-        intervalLabel.setTextSize(12);
-        intervalLabel.setGravity(Gravity.CENTER);
+        intervalMinus = small("−");
+        intervalMinus.setOnClickListener(v -> changeInterval(-1));
+        timingRow.addView(intervalMinus, new LinearLayout.LayoutParams(dp(36), dp(40)));
+
+        intervalLabel = compactLabel("", 12, 62);
         updateInterval();
-        panel.addView(intervalLabel, new LinearLayout.LayoutParams(dp(66), dp(44)));
+        timingRow.addView(intervalLabel);
 
-        Button plus = small("+");
-        plus.setOnClickListener(v -> changeInterval(1));
-        panel.addView(plus, new LinearLayout.LayoutParams(dp(38), dp(44)));
+        intervalPlus = small("+");
+        intervalPlus.setOnClickListener(v -> changeInterval(1));
+        timingRow.addView(intervalPlus, new LinearLayout.LayoutParams(dp(36), dp(40)));
+
+        modeButton = small("FIX");
+        modeButton.setTextSize(11);
+        modeButton.setOnClickListener(v -> toggleMode());
+        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(78), dp(40));
+        modeLp.setMargins(dp(7), 0, 0, 0);
+        timingRow.addView(modeButton, modeLp);
+        panel.addView(timingRow);
+
+        randomRow = new LinearLayout(this);
+        randomRow.setOrientation(LinearLayout.HORIZONTAL);
+        randomRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams randomRowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        randomRowLp.setMargins(0, dp(5), 0, 0);
+        randomRow.setLayoutParams(randomRowLp);
+
+        TextView minTitle = compactLabel("MIN", 10, 34);
+        randomRow.addView(minTitle);
+        Button minMinus = small("−");
+        minMinus.setOnClickListener(v -> changeRandomMin(-RANDOM_STEP_MS));
+        randomRow.addView(minMinus, new LinearLayout.LayoutParams(dp(30), dp(36)));
+        randomMinLabel = compactLabel("", 11, 50);
+        randomRow.addView(randomMinLabel);
+        Button minPlus = small("+");
+        minPlus.setOnClickListener(v -> changeRandomMin(RANDOM_STEP_MS));
+        randomRow.addView(minPlus, new LinearLayout.LayoutParams(dp(30), dp(36)));
+
+        TextView maxTitle = compactLabel("MAX", 10, 38);
+        LinearLayout.LayoutParams maxTitleLp = new LinearLayout.LayoutParams(dp(38), dp(38));
+        maxTitleLp.setMargins(dp(7), 0, 0, 0);
+        maxTitle.setLayoutParams(maxTitleLp);
+        randomRow.addView(maxTitle);
+        Button maxMinus = small("−");
+        maxMinus.setOnClickListener(v -> changeRandomMax(-RANDOM_STEP_MS));
+        randomRow.addView(maxMinus, new LinearLayout.LayoutParams(dp(30), dp(36)));
+        randomMaxLabel = compactLabel("", 11, 50);
+        randomRow.addView(randomMaxLabel);
+        Button maxPlus = small("+");
+        maxPlus.setOnClickListener(v -> changeRandomMax(RANDOM_STEP_MS));
+        randomRow.addView(maxPlus, new LinearLayout.LayoutParams(dp(30), dp(36)));
+        panel.addView(randomRow);
+
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams actionRowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        actionRowLp.setMargins(0, dp(5), 0, 0);
+        actionRow.setLayoutParams(actionRowLp);
 
         startPause = new Button(this);
         startPause.setText("START");
@@ -222,9 +309,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
             else if (paused) resumeLoop();
             else startLoop();
         });
-        LinearLayout.LayoutParams startLp = new LinearLayout.LayoutParams(dp(82), dp(44));
-        startLp.setMargins(dp(7), 0, 0, 0);
-        panel.addView(startPause, startLp);
+        actionRow.addView(startPause, new LinearLayout.LayoutParams(dp(108), dp(42)));
 
         stopButton = new Button(this);
         stopButton.setText("STOP");
@@ -233,9 +318,13 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         stopButton.setAllCaps(false);
         stopButton.setBackground(bg(Color.rgb(175, 30, 35), 18));
         stopButton.setOnClickListener(v -> stopLoop());
-        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(dp(70), dp(44));
-        stopLp.setMargins(dp(7), 0, 0, 0);
-        panel.addView(stopButton, stopLp);
+        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(dp(92), dp(42));
+        stopLp.setMargins(dp(8), 0, 0, 0);
+        actionRow.addView(stopButton, stopLp);
+        panel.addView(actionRow);
+
+        updateRandomLabels();
+        updateModeUi();
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -245,13 +334,44 @@ public class AutoClickAccessibilityService extends AccessibilityService {
                 PixelFormat.TRANSLUCENT
         );
         lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-        lp.y = dp(28);
+        lp.y = dp(24);
         controls = panel;
         wm.addView(controls, lp);
     }
 
-    private void changeInterval(int delta) {
+    private void toggleMode() {
         if (running || paused) return;
+        randomMode = !randomMode;
+        prefs.edit().putBoolean(KEY_RANDOM_MODE, randomMode).apply();
+        updateModeUi();
+    }
+
+    private void updateModeUi() {
+        if (modeButton != null) {
+            modeButton.setText(randomMode ? "RANDOM" : "FIX");
+            modeButton.setBackground(bg(
+                    randomMode ? Color.rgb(73, 88, 190) : Color.rgb(45, 47, 53),
+                    15
+            ));
+        }
+        if (randomRow != null) {
+            randomRow.setVisibility(randomMode ? View.VISIBLE : View.GONE);
+        }
+        if (intervalMinus != null) {
+            intervalMinus.setEnabled(!randomMode);
+            intervalMinus.setAlpha(randomMode ? .35f : 1f);
+        }
+        if (intervalPlus != null) {
+            intervalPlus.setEnabled(!randomMode);
+            intervalPlus.setAlpha(randomMode ? .35f : 1f);
+        }
+        if (intervalLabel != null) {
+            intervalLabel.setAlpha(randomMode ? .45f : 1f);
+        }
+    }
+
+    private void changeInterval(int delta) {
+        if (running || paused || randomMode) return;
         intervalIndex = Math.max(0, Math.min(INTERVALS.length - 1, intervalIndex + delta));
         prefs.edit().putInt(KEY_I, intervalIndex).apply();
         updateInterval();
@@ -263,7 +383,43 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         intervalLabel.setText(ms == 0 ? "MAX" : ms + " ms");
     }
 
+    private void changeRandomMin(long delta) {
+        if (running || paused) return;
+        randomMinMs = clampLong(randomMinMs + delta, RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
+        if (randomMinMs > randomMaxMs) randomMaxMs = randomMinMs;
+        persistRandomRange();
+        updateRandomLabels();
+    }
+
+    private void changeRandomMax(long delta) {
+        if (running || paused) return;
+        randomMaxMs = clampLong(randomMaxMs + delta, RANDOM_MIN_ALLOWED_MS, RANDOM_MAX_ALLOWED_MS);
+        if (randomMaxMs < randomMinMs) randomMinMs = randomMaxMs;
+        persistRandomRange();
+        updateRandomLabels();
+    }
+
+    private void persistRandomRange() {
+        if (prefs == null) return;
+        prefs.edit()
+                .putLong(KEY_RANDOM_MIN, randomMinMs)
+                .putLong(KEY_RANDOM_MAX, randomMaxMs)
+                .apply();
+    }
+
+    private void updateRandomLabels() {
+        if (randomMinLabel != null) randomMinLabel.setText(randomMinMs + "ms");
+        if (randomMaxLabel != null) randomMaxLabel.setText(randomMaxMs + "ms");
+    }
+
     private long currentClickPeriodMs() {
+        if (randomMode) {
+            long min = Math.max(MIN_CLICK_PERIOD_MS, randomMinMs);
+            long max = Math.max(min, randomMaxMs);
+            if (max == min) return min;
+            return ThreadLocalRandom.current().nextLong(min, max + 1);
+        }
+
         long selected = INTERVALS[intervalIndex];
         if (selected == 0) return MIN_CLICK_PERIOD_MS;
         return Math.max(MIN_CLICK_PERIOD_MS, selected);
@@ -331,7 +487,7 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         }
         if (target != null) {
             setTargetTouchable(false);
-            ((TextView) target).setText("•");
+            ((TextView) target).setText(randomMode ? "R" : "•");
             target.setAlpha(.62f);
         }
     }
@@ -347,17 +503,12 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         }
     }
 
-    /**
-     * The loop is intentionally driven by the Handler timer, not by GestureResultCallback.
-     * Some OEM builds can fail to deliver a completion callback even though the first tap
-     * was injected successfully. A missing callback therefore can no longer stop the loop.
-     */
     private void scheduleTap(long generation, long delayMs) {
         if (!running || generation != runGeneration) return;
         handler.postDelayed(() -> {
             if (!running || generation != runGeneration || targetLp == null) return;
             dispatchSingleTap();
-            // Start-to-start click period. A minimum period guarantees the previous UP has happened.
+            // In RANDOM mode this value is redrawn after every click.
             scheduleTap(generation, currentClickPeriodMs());
         }, Math.max(0, delayMs));
     }
@@ -376,16 +527,15 @@ public class AutoClickAccessibilityService extends AccessibilityService {
                 .addStroke(stroke)
                 .build();
 
-        // No loop state is changed from the callback. The next click is timer-driven.
         dispatchGesture(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription description) {
-                // Intentionally empty.
+                // Timer-driven loop: callback does not control repetition.
             }
 
             @Override
             public void onCancelled(GestureDescription description) {
-                // Intentionally empty; the timer continues and retries on the next cycle.
+                // Timer continues and tries again on the next scheduled cycle.
             }
         }, null);
     }
@@ -419,14 +569,19 @@ public class AutoClickAccessibilityService extends AccessibilityService {
         target = null;
         targetLp = null;
         controls = null;
+        randomRow = null;
         startPause = null;
         stopButton = null;
+        intervalMinus = null;
+        intervalPlus = null;
+        modeButton = null;
         intervalLabel = null;
+        randomMinLabel = null;
+        randomMaxLabel = null;
     }
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        // Swiping AutoClick Point away from Recents closes its floating UI as well.
         hideOverlays();
         super.onTaskRemoved(rootIntent);
     }
