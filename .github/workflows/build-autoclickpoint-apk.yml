@@ -56,13 +56,13 @@ jobs:
       - name: Prepare APK artifact
         run: |
           mkdir -p artifact
-          cp autoclickpoint-build/app/build/outputs/apk/debug/app-debug.apk artifact/AutoClickPoint-v1.0.1.apk
-          sha256sum artifact/AutoClickPoint-v1.0.1.apk > artifact/SHA256.txt
+          cp autoclickpoint-build/app/build/outputs/apk/debug/app-debug.apk artifact/AutoClickPoint-v1.0.2.apk
+          sha256sum artifact/AutoClickPoint-v1.0.2.apk > artifact/SHA256.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AutoClickPoint-v1.0.1-apk
+          name: AutoClickPoint-v1.0.2-apk
           path: artifact/*
           if-no-files-found: error
           retention-days: 30
