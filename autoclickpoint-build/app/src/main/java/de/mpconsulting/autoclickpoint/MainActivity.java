@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         root.addView(title);
 
-        TextView lead = text("FIX oder RANDOM: Klick → loslassen → nächster Klick. Bis Pause oder Stop.", 18, Color.DKGRAY);
+        TextView lead = text("FIX oder RANDOM · optional mit Bildwächter am Klickpunkt.", 18, Color.DKGRAY);
         LinearLayout.LayoutParams leadLp = new LinearLayout.LayoutParams(-1, -2);
         leadLp.setMargins(0, dp(10), 0, dp(16));
         root.addView(lead, leadLp);
@@ -111,9 +111,10 @@ public class MainActivity extends Activity {
         root.addView(checkAgain, checkLp);
 
         TextView behavior = text(
-                "Neu in v1.0.5: Im schwebenden Bedienfeld kannst du zwischen FIX und RANDOM wechseln. "
-                        + "Im RANDOM-Modus stellst du MIN und MAX separat ein, zum Beispiel 80–140 ms. "
-                        + "Nach jedem Klick wird der nächste Abstand neu zufällig innerhalb dieses Bereichs gewählt. Die Einstellung bleibt gespeichert.",
+                "Neu in v1.0.7 · Bildwächter: Zielpunkt auf das gewünschte Feld setzen und im Pop-up BILD LERNEN wählen. "
+                        + "Der kleine Bereich um den Punkt wird als lokale Referenz gelernt. Mit BILD AN wird vor jedem Klick frisch geprüft: "
+                        + "passt das Bild, wird geklickt; passt es nicht, steht WARTET AUF BILD und es wird nicht geklickt. "
+                        + "Sobald das Referenzbild wieder erscheint, setzt die Klickserie automatisch fort.",
                 14,
                 Color.rgb(38, 38, 42)
         );
@@ -122,15 +123,27 @@ public class MainActivity extends Activity {
         root.addView(behavior, behaviorLp);
 
         root.addView(text(
-                "Bedienung: Zielpunkt setzen → FIX oder RANDOM wählen → Intervall bzw. MIN/MAX einstellen → START. "
-                        + "PAUSE hält an, WEITER setzt fort. STOP beendet vollständig. "
-                        + "FIX verwendet den gewählten festen Abstand; RANDOM zieht für jeden Folgeklick einen neuen Wert zwischen MIN und MAX.",
+                "Bedienung im Pop-up: ↕ ZIEHEN verschiebt das Menü, ✕ BEENDEN schließt Pop-up und Zielpunkt. "
+                        + "FIX oder RANDOM steuert das Timing. BILD LERNEN / BILD AN aktiviert die visuelle Sicherheitsprüfung. "
+                        + "Wird der rote Zielpunkt danach verschoben, muss die Bildreferenz neu gelernt werden.",
                 15,
                 Color.rgb(38, 38, 42)
         ));
 
+        TextView timingNote = text(
+                "Hinweis: Android begrenzt Accessibility-Screenshots. Mit aktivem Bildwächter wird deshalb nur nach einer frischen Bildprüfung geklickt; "
+                        + "der effektive Klickabstand beträgt in diesem Modus mindestens ungefähr 0,4 Sekunden. Ohne Bildwächter bleiben die schnellen Intervalle verfügbar.",
+                13,
+                Color.rgb(120, 75, 0)
+        );
+        LinearLayout.LayoutParams timingLp = new LinearLayout.LayoutParams(-1, -2);
+        timingLp.setMargins(0, dp(16), 0, 0);
+        root.addView(timingNote, timingLp);
+
         TextView privacy = text(
-                "Lokal: keine Internet-Berechtigung, kein Root. AutoClick Point liest keine Inhalte anderer Apps; der Dienst sendet nur die von dir festgelegte Bildschirmgeste.",
+                "Lokal und ohne Internet-Berechtigung. Für den optionalen Bildwächter nimmt der Accessibility-Dienst kurz einen Bildschirmframe auf, "
+                        + "wertet ausschließlich den kleinen Bereich um den Klickpunkt aus und speichert nur eine kompakte Bildsignatur. "
+                        + "Screenshots werden nicht gespeichert oder übertragen.",
                 13,
                 Color.GRAY
         );
