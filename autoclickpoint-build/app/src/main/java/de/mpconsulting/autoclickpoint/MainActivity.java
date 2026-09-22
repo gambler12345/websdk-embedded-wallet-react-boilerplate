@@ -47,7 +47,7 @@ public class MainActivity extends Activity {
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         root.addView(title);
 
-        TextView lead = text("Ein fester Punkt. Wiederholte Klicks. Bis Pause.", 18, Color.DKGRAY);
+        TextView lead = text("Drücken → Loslassen → wiederholen. Bis Pause oder Stop.", 18, Color.DKGRAY);
         LinearLayout.LayoutParams leadLp = new LinearLayout.LayoutParams(-1, -2);
         leadLp.setMargins(0, dp(10), 0, dp(18));
         root.addView(lead, leadLp);
@@ -90,8 +90,8 @@ public class MainActivity extends Activity {
         root.addView(accessibilityButton, accessibilityLp);
 
         root.addView(text(
-                "Danach: gewünschte App öffnen → roten Zielpunkt positionieren → Intervall wählen → START. "
-                        + "PAUSE beendet die Klickserie jederzeit.",
+                "Bedienung: Zielpunkt setzen → Intervall wählen → START. Jeder Zyklus drückt ca. 45 ms und lässt danach los. "
+                        + "PAUSE hält am gleichen Zielpunkt an, WEITER setzt fort. STOP beendet die Serie vollständig und entsperrt den Zielpunkt wieder.",
                 15,
                 Color.rgb(38, 38, 42)
         ));
