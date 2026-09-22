@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         root.addView(title);
 
-        TextView lead = text("Drücken → Loslassen → wiederholen. Bis Pause oder Stop.", 18, Color.DKGRAY);
+        TextView lead = text("Klick → loslassen → Intervall → Klick → Klick → Klick. Bis Pause oder Stop.", 18, Color.DKGRAY);
         LinearLayout.LayoutParams leadLp = new LinearLayout.LayoutParams(-1, -2);
         leadLp.setMargins(0, dp(10), 0, dp(16));
         root.addView(lead, leadLp);
@@ -76,19 +76,14 @@ public class MainActivity extends Activity {
         diagLp.setMargins(0, 0, 0, dp(18));
         root.addView(diagnostics, diagLp);
 
-        TextView setupTitle = text("Android 13–15 · richtige Freigabereihenfolge", 18, Color.rgb(18, 18, 20));
+        TextView setupTitle = text("Android 13–15 · Freigabe", 18, Color.rgb(18, 18, 20));
         setupTitle.setTypeface(null, android.graphics.Typeface.BOLD);
         root.addView(setupTitle);
 
         String restrictedInfo = Build.VERSION.SDK_INT >= 33
-                ? "1  Zuerst BEDIENUNGSHILFEN öffnen.\n"
-                  + "   AutoClick Point auswählen und das Einschalten versuchen.\n"
-                  + "   Falls Android »Eingeschränkte Einstellung« meldet: Meldung bestätigen.\n\n"
-                  + "2  Danach SYSTEMEINSTELLUNGEN öffnen.\n"
-                  + "   Dort MANUELL zu Apps → Alle Apps → AutoClick Point navigieren.\n"
-                  + "   Nicht über einen direkten App-Info-Shortcut gehen.\n\n"
-                  + "3  Falls nun ⋮ / »Eingeschränkte Einstellungen zulassen« erscheint: freigeben.\n\n"
-                  + "4  Danach BEDIENUNGSHILFEN erneut öffnen und AutoClick Point aktivieren."
+                ? "1  BEDIENUNGSHILFEN öffnen und AutoClick Point aktivieren.\n"
+                  + "2  Falls Android eine eingeschränkte Einstellung meldet, diese über die Systemeinstellungen freigeben.\n"
+                  + "3  Danach hierher zurückkehren."
                 : "1  BEDIENUNGSHILFEN öffnen\n"
                   + "2  AutoClick Point aktivieren\n"
                   + "3  zur gewünschten App wechseln";
@@ -97,13 +92,13 @@ public class MainActivity extends Activity {
         instructionsLp.setMargins(0, dp(8), 0, dp(18));
         root.addView(instructions, instructionsLp);
 
-        accessibilityButton = button("1 · BEDIENUNGSHILFEN ÖFFNEN / TESTEN");
+        accessibilityButton = button("BEDIENUNGSHILFEN ÖFFNEN / TESTEN");
         accessibilityButton.setOnClickListener(v -> openAccessibilitySettings());
         LinearLayout.LayoutParams accessibilityLp = new LinearLayout.LayoutParams(-1, dp(58));
         accessibilityLp.setMargins(0, 0, 0, dp(10));
         root.addView(accessibilityButton, accessibilityLp);
 
-        Button systemSettings = button("2 · SYSTEMEINSTELLUNGEN ÖFFNEN");
+        Button systemSettings = button("SYSTEMEINSTELLUNGEN ÖFFNEN");
         systemSettings.setOnClickListener(v -> openSystemSettings());
         LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(-1, dp(58));
         settingsLp.setMargins(0, 0, 0, dp(10));
@@ -115,18 +110,20 @@ public class MainActivity extends Activity {
         checkLp.setMargins(0, 0, 0, dp(20));
         root.addView(checkAgain, checkLp);
 
-        TextView motorola = text(
-                "Hinweis für Motorola/Android 15: Wenn auf der App-Info-Seite kein ⋮-Menü zu sehen ist, zuerst den Aktivierungsversuch unter Bedienungshilfen ausführen und anschließend über die normale Einstellungen-App manuell zur App-Info navigieren.",
-                13,
-                Color.rgb(120, 75, 0)
+        TextView behavior = text(
+                "Neu in v1.0.4: Die Klickserie läuft zeitgesteuert weiter und hängt nicht mehr vom Android-Gesten-Callback ab. "
+                        + "Wenn AutoClick Point mit Zurück beendet oder aus der App-Übersicht weggewischt wird, verschwinden Zielpunkt und Steuerleiste ebenfalls und die Klickserie stoppt.",
+                14,
+                Color.rgb(38, 38, 42)
         );
-        LinearLayout.LayoutParams motoLp = new LinearLayout.LayoutParams(-1, -2);
-        motoLp.setMargins(0, 0, 0, dp(18));
-        root.addView(motorola, motoLp);
+        LinearLayout.LayoutParams behaviorLp = new LinearLayout.LayoutParams(-1, -2);
+        behaviorLp.setMargins(0, 0, 0, dp(18));
+        root.addView(behavior, behaviorLp);
 
         root.addView(text(
-                "Bedienung: Zielpunkt setzen → Intervall wählen → START. Jeder Zyklus drückt ca. 45 ms und lässt danach los. "
-                        + "PAUSE hält an, WEITER setzt fort. STOP beendet die Serie vollständig und entsperrt den Zielpunkt wieder.",
+                "Bedienung: Zielpunkt setzen → Intervall wählen → START. "
+                        + "PAUSE hält an, WEITER setzt fort. STOP beendet vollständig. "
+                        + "MAX verwendet die schnellstmögliche stabile Folge; bei festen Intervallen wird der nächste Klick entsprechend zeitgesteuert gestartet.",
                 15,
                 Color.rgb(38, 38, 42)
         ));
@@ -140,22 +137,24 @@ public class MainActivity extends Activity {
         privacyLp.setMargins(0, dp(18), 0, 0);
         root.addView(privacy, privacyLp);
 
-        TextView warning = text(
-                "Die Android-Sicherheitsfreigabe für eingeschränkte Einstellungen muss vom Nutzer selbst bestätigt werden und kann von der APK nicht automatisch gesetzt oder umgangen werden.",
-                13,
-                Color.rgb(150, 40, 40)
-        );
-        LinearLayout.LayoutParams warnLp = new LinearLayout.LayoutParams(-1, -2);
-        warnLp.setMargins(0, dp(12), 0, 0);
-        root.addView(warning, warnLp);
-
         setContentView(scroll, new LinearLayout.LayoutParams(-1, -1));
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        // Opening the app means the user wants the floating controls available.
+        AutoClickAccessibilityService.requestShowOverlays(this);
         refreshStatus();
+    }
+
+    @Override
+    protected void onDestroy() {
+        // Back/finish is a real close. Merely switching to another app is not.
+        if (isFinishing() && !isChangingConfigurations()) {
+            AutoClickAccessibilityService.requestHideOverlays(this);
+        }
+        super.onDestroy();
     }
 
     private void openAccessibilitySettings() {
@@ -181,10 +180,11 @@ public class MainActivity extends Activity {
             status.setText("✓ Bedienungshilfe ist AKTIV");
             status.setTextColor(Color.rgb(20, 120, 65));
             accessibilityButton.setText("✓ BEDIENUNGSHILFE AKTIV");
+            AutoClickAccessibilityService.requestShowOverlays(this);
         } else {
             status.setText("● Systemfreigabe noch NICHT aktiv");
             status.setTextColor(Color.rgb(150, 40, 40));
-            accessibilityButton.setText("1 · BEDIENUNGSHILFEN ÖFFNEN / TESTEN");
+            accessibilityButton.setText("BEDIENUNGSHILFEN ÖFFNEN / TESTEN");
         }
 
         String device = Build.MANUFACTURER + " " + Build.MODEL + " · Android " + Build.VERSION.RELEASE;
