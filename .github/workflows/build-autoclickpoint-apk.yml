@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Apply v1.0.8 strict image guard
-        run: python autoclickpoint-build/patch_v108.py
+        run: python autoclickpoint-build/patch_v108_fixed.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
