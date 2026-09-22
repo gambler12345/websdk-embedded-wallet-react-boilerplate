@@ -7,8 +7,8 @@ android {
         applicationId = "de.mpconsulting.autoclickpoint"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 8
+        versionName = "1.0.7"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
