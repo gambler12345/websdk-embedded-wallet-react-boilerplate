@@ -1,0 +1,51 @@
+name: Android Toolchain Export
+
+on:
+  push:
+    branches:
+      - chatgpt/android-toolchain-bootstrap
+    paths:
+      - '.github/workflows/android-toolchain-export.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK command line tools
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Install Android 35 toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+          mkdir -p export/platform export/build-tools
+          cp "$ANDROID_HOME/platforms/android-35/android.jar" export/platform/android.jar
+          cp -a "$ANDROID_HOME/build-tools/35.0.0/." export/build-tools/
+          printf 'Android platform 35 + build-tools 35.0.0\n' > export/README.txt
+          find export -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload generic Android toolchain
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-35-build-tools-35
+          path: export/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 1
