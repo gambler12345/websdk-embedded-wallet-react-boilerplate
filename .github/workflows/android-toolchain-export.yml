@@ -11,7 +11,7 @@ on:
 jobs:
   export:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -35,17 +35,30 @@ jobs:
           set -euxo pipefail
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-          mkdir -p export/platform export/build-tools
+          mkdir -p export/platform export/build-tools export/runtime export/models
           cp "$ANDROID_HOME/platforms/android-35/android.jar" export/platform/android.jar
           cp -a "$ANDROID_HOME/build-tools/35.0.0/." export/build-tools/
-          printf 'Android platform 35 + build-tools 35.0.0\n' > export/README.txt
+          printf 'Android platform 35 + build-tools 35.0.0 + public local-AI runtimes/models\n' > export/README.txt
+
+      - name: Download public local-AI runtimes and models
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -L --fail --retry 4 'https://github.com/ffmpegkit-maintained/llama-android/releases/download/v0.1.1/library-release.aar' -o export/runtime/llama-android-0.1.1.aar
+          curl -L --fail --retry 4 'https://github.com/ffmpegkit-maintained/whisper/releases/download/v1.0.0/whisper-android-v1.0.0.aar' -o export/runtime/whisper-android-v1.0.0.aar
+          curl -L --fail --retry 4 'https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf?download=true' -o export/models/local-core.gguf
+          curl -L --fail --retry 4 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true' -o export/models/ggml-tiny.bin
+          echo 'fdccf04c77de470004d7e54679bb918074ee9dbf31ea75af8c014d19c31e7501  export/runtime/llama-android-0.1.1.aar' | sha256sum -c -
+          echo '745c5be8877fb9483ebe4306ad39a8a526549ea8a684d2bc515e80fc917e4fa7  export/runtime/whisper-android-v1.0.0.aar' | sha256sum -c -
+          echo '8030f04528538d47bda434f6f0bdf3952c40a58123e4d5e755332f23731a8684  export/models/local-core.gguf' | sha256sum -c -
+          echo 'be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21  export/models/ggml-tiny.bin' | sha256sum -c -
           find export -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
 
       - name: Upload generic Android toolchain
         uses: actions/upload-artifact@v4
         with:
-          name: android-35-build-tools-35
+          name: android-35-local-ai-toolchain
           path: export/
           if-no-files-found: error
-          compression-level: 6
+          compression-level: 0
           retention-days: 1
